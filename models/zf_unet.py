@@ -80,7 +80,11 @@ def ZF_UNET(dropout_val=0.2, batch_norm=True, patch_size=224, input_channels=3, 
     up_conv_224 = double_conv_layer(up_224, filters, dropout_val, batch_norm)
 
     conv_final = Conv2D(output_classes, (1, 1))(up_conv_224)
-    conv_final = Activation('sigmoid')(conv_final)
+
+    if output_classes == 1:
+        conv_final = Activation('sigmoid')(conv_final)
+    else:
+        conv_final = Activation('softmax')(conv_final)
 
     model = Model(inputs, conv_final, name="ZF_UNET")
     return model
