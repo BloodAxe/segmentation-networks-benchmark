@@ -1,0 +1,221 @@
+import numpy as np
+import torch
+from torch.autograd import Variable
+from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.sampler import BatchSampler, RandomSampler
+
+from lib.tiles import ImageSlicer
+from lib.torch import albunet, linknet, unet11, unet16
+
+import cv2
+import os.path
+import argparse
+import pandas as pd
+
+from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss
+from lib.torch.unet import UNet
+from sklearn.model_selection import train_test_split
+
+
+def find_in_dir(dirname):
+    return [os.path.join(dirname, fname) for fname in os.listdir(dirname)]
+
+
+def to_float_tensor(img: np.ndarray):
+    # .copy() because RuntimeError: some of the strides of a given numpy array are negative.
+    #  This is currently not supported, but will be added in future releases.
+    # https://discuss.pytorch.org/t/torch-from-numpy-not-support-negative-strides/3663
+    tensor = torch.from_numpy(np.moveaxis(img, -1, 0)).float()
+    return tensor
+
+
+def normalize_image(x: np.ndarray):
+    x = x.astype(np.float32, copy=True)
+    x /= 127.5
+    x -= 1.
+    return x
+
+
+class SimpleDataset(Dataset):
+    def __init__(self, images, masks):
+        self.images = [to_float_tensor(i) for i in images]
+        self.masks = [to_float_tensor(m) for m in masks]
+
+    def __getitem__(self, index):
+        return self.images[index], self.masks[index]
+
+    def __len__(self):
+        return len(self.images)
+
+
+def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
+    dataset_name = dataset_name.lower()
+
+    if dataset_name == 'dsb2018':
+        images = find_in_dir(os.path.join(dataset_dir, dataset_name, 'images'))
+        images = [cv2.imread(fname, cv2.IMREAD_GRAYSCALE if grayscale else cv2.IMREAD_COLOR) for fname in images]
+        images = [normalize_image(i) for i in images]
+        if grayscale:
+            images = [np.expand_dims(m, axis=-1) for m in images]
+
+        masks = find_in_dir(os.path.join(dataset_dir, dataset_name, 'masks'))
+        masks = [cv2.imread(fname, cv2.IMREAD_GRAYSCALE) for fname in masks]
+        masks = [np.expand_dims(m, axis=-1) for m in masks]
+        masks = [np.float32(m > 0) for m in masks]
+
+        patch_images = []
+        patch_masks = []
+        for image, mask in zip(images, masks):
+            slicer = ImageSlicer(image.shape, patch_size, patch_size // 2)
+
+            patch_images.extend(slicer.split(image))
+            patch_masks.extend(slicer.split(mask))
+
+        return SimpleDataset(patch_images, patch_masks)
+
+    raise ValueError(dataset_name)
+
+
+def get_optimizer(optimizer_name, model_parameters, learning_rate):
+    optimizer_name = optimizer_name.lower()
+
+    if optimizer_name == 'sgd':
+        return torch.optim.SGD(model_parameters, lr=learning_rate)
+
+    if optimizer_name == 'rms':
+        return torch.optim.RMSprop(model_parameters, lr=learning_rate)
+
+    if optimizer_name == 'adam':
+        return torch.optim.Adam(model_parameters, lr=learning_rate)
+
+    raise ValueError(optimizer_name)
+
+
+def get_loss(loss):
+    loss = loss.lower()
+
+    if loss == 'bce':
+        return torch.nn.BCEWithLogitsLoss()
+
+    if loss == 'dice':
+        return DiceLoss()
+
+    if loss == 'jaccard':
+        return JaccardLoss()
+
+    if loss == 'bce_jaccard':
+        return BCEWithLogitsLossAndJaccard(jaccard_weight=1)
+
+    raise ValueError(loss)
+
+
+def get_model(model_name):
+    model_name = str.lower(model_name)
+
+    if model_name == 'unet':
+        return UNet(num_classes=1)
+
+    if model_name == 'unet11':
+        return unet11.UNet11(num_classes=1)
+
+    if model_name == 'unet16':
+        return unet16.UNet16(num_classes=1)
+
+    if model_name == 'linknet':
+        return linknet.LinkNet34(num_classes=1)
+
+    if model_name == 'albunet':
+        return albunet.AlbuNet(num_classes=1)
+
+    raise ValueError(model_name)
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def run_train_session(model_name: str, optimizer: str, loss, learning_rate, epochs, dataset_name, dataset_dir, experiment, grayscale, patch_size, batch_size):
+    np.random.seed(42)
+
+    os.makedirs(experiment, exist_ok=True)
+
+    ds = get_dataset(dataset_name, dataset_dir, grayscale=grayscale, patch_size=patch_size)
+
+    trainloader = DataLoader(ds, batch_size=batch_size, shuffle=True, pin_memory=True)
+
+    # x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.2)
+
+    model = get_model(model_name)
+    model = model.cuda()
+    model.train()
+    print(model_name, count_parameters(model))
+
+    optim = get_optimizer(optimizer, model.parameters(), learning_rate)
+    criterion = get_loss(loss)
+
+    for epoch in range(epochs):  # loop over the dataset multiple times
+        running_loss = 0.0
+        for i, data in enumerate(trainloader, 0):
+            # get the inputs
+            x, y = data
+
+            # wrap them in Variable
+            x, y = Variable(x).cuda(async=True), Variable(y).cuda(async=True)
+
+            # zero the parameter gradients
+            optim.zero_grad()
+
+            # forward + backward + optimize
+            outputs = model(x)
+            loss = criterion(outputs, y)
+            loss.backward()
+            optim.step()
+
+            # print statistics
+            running_loss += loss.data[0]
+            if i % 2000 == 1999:  # print every 2000 mini-batches
+                print('[%d, %5d] loss: %.3f' %
+                      (epoch + 1, i + 1, running_loss / 2000))
+                running_loss = 0.0
+
+    print('Training is finished...')
+
+    # pd.DataFrame(h.history).to_csv(os.path.join(experiment, experiment + '.csv'), index=False)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('-g', '--grayscale', action='store_true', help='Whether to use grayscale image instead of RGB')
+    parser.add_argument('-m', '--model', required=True, type=str, help='Name of the model')
+    parser.add_argument('-p', '--patch-size', type=int, default=224)
+    parser.add_argument('-b', '--batch-size', type=int, default=1, help='Batch Size during training, e.g. -b 64')
+    parser.add_argument('-lr', '--learning-rate', type=float, default=1e-2, help='Initial learning rate')
+    parser.add_argument('-l', '--loss', type=str, default='bce', help='Target loss')
+    parser.add_argument('-o', '--optimizer', default='SGD', help='Name of the optimizer')
+    parser.add_argument('-e', '--epochs', type=int, default=50, help='Epoch to run')
+    parser.add_argument('-d', '--dataset', type=str, help='Name of the dataset to use for training.')
+    parser.add_argument('-dd', '--data-dir', type=str, default='data', help='Root directory where datasets are located.')
+    parser.add_argument('-s', '--steps', type=int, default=128, help='Steps per epoch')
+    parser.add_argument('-x', '--experiment', type=str, help='Name of the experiment')
+
+    args = parser.parse_args()
+
+    if args.experiment is None:
+        args.experiment = '%s_%d_%s_%s' % (args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
+
+    run_train_session(model_name=args.model,
+                      dataset_name=args.dataset,
+                      dataset_dir=args.data_dir,
+                      patch_size=args.patch_size,
+                      batch_size=args.batch_size,
+                      optimizer=args.optimizer,
+                      learning_rate=args.learning_rate,
+                      experiment=args.experiment,
+                      grayscale=args.grayscale,
+                      loss=args.loss,
+                      epochs=args.epochs)
+
+
+if __name__ == '__main__':
+    main()

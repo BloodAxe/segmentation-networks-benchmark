@@ -1,9 +1,12 @@
 import numpy as np
 
-from models.dilated_resnet import DilatedResnet
-from models.dilated_unet import DilatedUnet
-from models.linknet import LinkNet
-from models.zf_unet import ZF_UNET
+from lib.tiles import ImageSlicer
+from keras.dilated_resnet import DilatedResnet
+from keras.dilated_unet import DilatedUnet
+from keras.linknet import LinkNet
+from keras.selunet import Selunet
+from keras.tiramisu67 import Tiramisu67
+from keras.zf_unet import ZF_UNET
 
 import cv2
 import os.path
@@ -12,7 +15,7 @@ import pandas as pd
 import tensorflow as tf
 import keras.backend.tensorflow_backend as KTF
 
-from losses import dice_loss, jaccard_loss, bce_jaccard_loss
+from losses import dice_loss, jaccard_loss, bce_jaccard_loss, jaccard_coef
 from sklearn.model_selection import train_test_split
 from keras.callbacks import ModelCheckpoint
 from keras.optimizers import SGD, Adam, RMSprop
@@ -30,7 +33,7 @@ def normalize_image(x: np.ndarray):
     return x
 
 
-def get_dataset(dataset_name, dataset_dir, grayscale):
+def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
     dataset_name = dataset_name.lower()
 
     if dataset_name == 'dsb2018':
@@ -45,7 +48,15 @@ def get_dataset(dataset_name, dataset_dir, grayscale):
         masks = [np.expand_dims(m, axis=-1) for m in masks]
         masks = [np.float32(m > 0) for m in masks]
 
-        return np.array(images), np.array(masks)
+        patch_images = []
+        patch_masks = []
+        for image, mask in zip(images, masks):
+            slicer = ImageSlicer(image.shape, patch_size, patch_size//2)
+
+            patch_images.extend(slicer.split(image))
+            patch_masks.extend(slicer.split(mask))
+
+        return np.array(patch_images), np.array(patch_masks)
 
     raise ValueError(dataset_name)
 
@@ -90,6 +101,9 @@ def get_model(model_name, patch_size, grayscale):
     if model_name == 'zf_unet':
         return ZF_UNET(patch_size=patch_size, input_channels=input_channels, output_classes=1)
 
+    if model_name == 'selunet':
+        return Selunet(patch_size=patch_size, input_channels=input_channels, output_classes=1)
+
     if model_name == 'dilated_unet':
         return DilatedUnet(patch_size=patch_size, input_channels=input_channels, output_classes=1)
 
@@ -98,6 +112,9 @@ def get_model(model_name, patch_size, grayscale):
 
     if model_name == 'linknet':
         return LinkNet(patch_size=patch_size, input_channels=input_channels, output_classes=1)
+
+    if model_name == 'tiramisu67':
+        return Tiramisu67(patch_size=patch_size, input_channels=input_channels, output_classes=1)
 
     raise ValueError(model_name)
 
@@ -113,13 +130,13 @@ def run_train_session(model, optimizer, loss, learning_rate, epochs, dataset_nam
 
     os.makedirs(experiment, exist_ok=True)
 
-    x, y = get_dataset(dataset_name, dataset_dir, grayscale)
+    x, y = get_dataset(dataset_name, dataset_dir, grayscale=grayscale, patch_size=patch_size)
     x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.2)
 
     optim = get_optimizer(optimizer, learning_rate)
     loss = get_loss(loss)
     model = get_model(model, patch_size, grayscale)
-    model.compile(optimizer=optim, loss=loss)
+    model.compile(optimizer=optim, loss=loss, metrics=[jaccard_coef])
     model.summary()
 
     callbacks = [
