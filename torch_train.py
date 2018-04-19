@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 import torch
 from torch.autograd import Variable
@@ -164,8 +166,6 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
                       experiment: str, grayscale: bool, patch_size: int, batch_size: int):
     np.random.seed(42)
 
-    os.makedirs(experiment, exist_ok=True)
-
     x, y = get_dataset(dataset_name, dataset_dir, grayscale=grayscale, patch_size=patch_size)
     x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.2)
 
@@ -185,44 +185,45 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
     valid_losses = []
     train_metric = []
     valid_metric = []
+    best_loss = np.inf
 
     for epoch in range(epochs):  # loop over the dataset multiple times
-        tq = tqdm(total=len(trainloader) * batch_size)
-        tq.set_description('Epoch {}, lr {}'.format(epoch, learning_rate))
         trn_loss = []
         trn_metric = []
-
         model.train()
 
-        for i, data in enumerate(trainloader, 0):
-            # get the inputs
-            x, y = data
+        with tqdm(total=len(trainloader) * batch_size) as tq:
+            tq.set_description('Epoch {}, lr {}'.format(epoch, learning_rate))
 
-            # wrap them in Variable
-            x, y = T.variable(x), T.variable(y)
+            for i, data in enumerate(trainloader, 0):
+                # get the inputs
+                x, y = data
 
-            # zero the parameter gradients
-            optim.zero_grad()
+                # wrap them in Variable
+                x, y = T.variable(x), T.variable(y)
 
-            # forward + backward + optimize
-            outputs = model(x)
-            loss = criterion(outputs, y)
+                # zero the parameter gradients
+                optim.zero_grad()
 
-            bs = x.size(0)
-            (bs * loss).backward()
+                # forward + backward + optimize
+                outputs = model(x)
+                loss = criterion(outputs, y)
 
-            # Compute metrics
-            jaccard_score = jaccard_metric(outputs, y)
+                bs = x.size(0)
+                (bs * loss).backward()
 
-            optim.step()
+                optim.step()
 
-            trn_loss.append(loss.data[0])
-            trn_metric.append(jaccard_score.data[0])
+                # Compute metrics
+                jaccard_score = jaccard_metric(outputs, y)
 
-            tq.update(bs)
-            mean_loss = np.mean(trn_loss[-report_each:])
-            mean_jaccard = np.mean(trn_metric[-report_each:])
-            tq.set_postfix(loss='{:.3f}'.format(mean_loss), jaccard='{:.3f}'.format(mean_jaccard))
+                trn_loss.append(loss.data[0])
+                trn_metric.append(jaccard_score.data[0])
+
+                tq.update(bs)
+                mean_loss = np.mean(trn_loss[-report_each:])
+                mean_jaccard = np.mean(trn_metric[-report_each:])
+                tq.set_postfix(loss='{:.3f}'.format(mean_loss), jaccard='{:.3f}'.format(mean_jaccard))
 
         val_loss, val_jaccard = validate(model, criterion, jaccard_metric, validloader)
         trn_loss = np.mean(trn_loss)
@@ -232,12 +233,18 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
         train_losses.append(trn_loss)
         train_metric.append(trn_metric)
         valid_metric.append(val_jaccard)
-
         print('loss=%.3f jaccard=%.3f val_loss=%.3f val_jaccard=%.3f' % (trn_loss, trn_metric, val_loss, val_jaccard))
+
+        if val_loss < best_loss:
+            best_loss = val_loss
+            torch.save({
+                'model': model.state_dict(),
+                'epoch': epoch+1,
+                'loss' : best_loss,
+            }, os.path.join(experiment_dir, f'{model_name}_checkpoint.pth'))
 
     print('Training is finished...')
 
-    os.makedirs(experiment_dir, exist_ok=True)
     pd.DataFrame.from_dict({'val_loss': valid_losses, 'loss': train_losses, 'val_jaccard': valid_metric, 'jaccard': train_metric})\
                 .to_csv(os.path.join(experiment_dir, experiment + '.csv'), index=False)
 
@@ -249,7 +256,7 @@ def main():
     parser.add_argument('-m', '--model', required=True, type=str, help='Name of the model')
     parser.add_argument('-p', '--patch-size', type=int, default=224)
     parser.add_argument('-b', '--batch-size', type=int, default=1, help='Batch Size during training, e.g. -b 64')
-    parser.add_argument('-lr', '--learning-rate', type=float, default=1e-2, help='Initial learning rate')
+    parser.add_argument('-lr', '--learning-rate', type=float, default=1e-3, help='Initial learning rate')
     parser.add_argument('-l', '--loss', type=str, default='bce', help='Target loss')
     parser.add_argument('-o', '--optimizer', default='SGD', help='Name of the optimizer')
     parser.add_argument('-e', '--epochs', type=int, default=50, help='Epoch to run')
@@ -263,6 +270,11 @@ def main():
     if args.experiment is None:
         args.experiment = 'torch_%s_%d_%s_%s' % (args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
 
+    experiment_dir = os.path.join('experiments', args.experiment)
+    os.makedirs(experiment_dir,exist_ok=True)
+    with open(os.path.join(experiment_dir, 'arguments.txt'), 'w') as f:
+        f.write(' '.join(sys.argv[1:]))
+
     run_train_session(model_name=args.model,
                       dataset_name=args.dataset,
                       dataset_dir=args.data_dir,
@@ -270,11 +282,12 @@ def main():
                       batch_size=args.batch_size,
                       optimizer=args.optimizer,
                       learning_rate=args.learning_rate,
-                      experiment_dir=os.path.join('experiments', args.experiment),
+                      experiment_dir=experiment_dir,
                       experiment=args.experiment,
                       grayscale=args.grayscale,
                       loss=args.loss,
                       epochs=args.epochs)
+
 
 
 if __name__ == '__main__':
