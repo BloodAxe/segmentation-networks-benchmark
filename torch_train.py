@@ -63,13 +63,13 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
     dataset_name = dataset_name.lower()
 
     if dataset_name == 'dsb2018':
-        images = find_in_dir(os.path.join(dataset_dir, dataset_name, 'images'))
+        images = find_in_dir(os.path.join(dataset_dir, 'images'))
         images = [cv2.imread(fname, cv2.IMREAD_GRAYSCALE if grayscale else cv2.IMREAD_COLOR) for fname in images]
         images = [normalize_image(i) for i in images]
         if grayscale:
             images = [np.expand_dims(m, axis=-1) for m in images]
 
-        masks = find_in_dir(os.path.join(dataset_dir, dataset_name, 'masks'))
+        masks = find_in_dir(os.path.join(dataset_dir, 'masks'))
         masks = [cv2.imread(fname, cv2.IMREAD_GRAYSCALE) for fname in masks]
         masks = [np.expand_dims(m, axis=-1) for m in masks]
         masks = [np.float32(m > 0) for m in masks]
