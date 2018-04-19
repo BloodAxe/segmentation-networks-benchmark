@@ -14,6 +14,7 @@ import os.path
 import argparse
 import pandas as pd
 
+from lib.torch.gcn import GCN
 from lib.torch.tiramisu import FCDenseNet67
 from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss, JaccardScore
 from lib.torch.unet import UNet
@@ -119,7 +120,7 @@ def get_loss(loss):
     raise ValueError(loss)
 
 
-def get_model(model_name, num_classes=1):
+def get_model(model_name, num_classes, patch_size):
     model_name = str.lower(model_name)
 
     if model_name == 'unet':
@@ -139,6 +140,9 @@ def get_model(model_name, num_classes=1):
 
     if model_name == 'tiramisu67':
         return FCDenseNet67(n_classes=num_classes)
+
+    if model_name == 'gcn':
+        return GCN(num_classes=num_classes, input_size=patch_size)
 
     raise ValueError(model_name)
 
@@ -175,7 +179,7 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
     trainloader = DataLoader(SimpleDataset(x_train, y_train), batch_size=batch_size, shuffle=True, pin_memory=True)
     validloader = DataLoader(SimpleDataset(x_test, y_test), batch_size=batch_size, shuffle=False, pin_memory=True)
 
-    model = get_model(model_name)
+    model = get_model(model_name, num_classes=1, patch_size=patch_size)
     model = model.cuda()
     print('Training', model_name, 'Number of parameters', count_parameters(model))
 
