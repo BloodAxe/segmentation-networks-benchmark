@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import torch
 from torch.autograd import Variable
+from torch.backends import cudnn
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from lib.tiles import ImageSlicer
@@ -20,6 +21,8 @@ from sklearn.model_selection import train_test_split
 from lib.torch import common as T
 
 from tqdm import tqdm
+
+from plot import plot_train_history
 
 tqdm.monitor_interval = 0  # Workaround for https://github.com/tqdm/tqdm/issues/481
 
@@ -177,8 +180,8 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
     print('Training', model_name, 'Number of parameters', count_parameters(model))
 
     optim = get_optimizer(optimizer, model.parameters(), learning_rate)
-    criterion = get_loss(loss)
-    jaccard_metric = JaccardScore()
+    criterion = get_loss(loss).cuda()
+    jaccard_metric = JaccardScore().cuda()
     report_each = 10
 
     train_losses = []
@@ -186,6 +189,8 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
     train_metric = []
     valid_metric = []
     best_loss = np.inf
+
+    cudnn.benchmark = True
 
     for epoch in range(epochs):  # loop over the dataset multiple times
         trn_loss = []
@@ -248,6 +253,7 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
     pd.DataFrame.from_dict({'val_loss': valid_losses, 'loss': train_losses, 'val_jaccard': valid_metric, 'jaccard': train_metric})\
                 .to_csv(os.path.join(experiment_dir, experiment + '.csv'), index=False)
 
+    # plot_train_history(experiment, [train_losses, valid_metric],[train_metric, valid_metric])
 
 def main():
     parser = argparse.ArgumentParser()
@@ -259,7 +265,7 @@ def main():
     parser.add_argument('-lr', '--learning-rate', type=float, default=1e-3, help='Initial learning rate')
     parser.add_argument('-l', '--loss', type=str, default='bce', help='Target loss')
     parser.add_argument('-o', '--optimizer', default='SGD', help='Name of the optimizer')
-    parser.add_argument('-e', '--epochs', type=int, default=50, help='Epoch to run')
+    parser.add_argument('-e', '--epochs', type=int, default=100, help='Epoch to run')
     parser.add_argument('-d', '--dataset', type=str, help='Name of the dataset to use for training.')
     parser.add_argument('-dd', '--data-dir', type=str, default='data', help='Root directory where datasets are located.')
     parser.add_argument('-s', '--steps', type=int, default=128, help='Steps per epoch')
