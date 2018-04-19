@@ -38,6 +38,9 @@ summarize(results)
 - [ ] Add COCO dataset
 - [ ] Add STARE dataset
 - [ ] Add LUNA16 dataset
+- [ ] Add Inria dataset
+- [ ] Add Cityscapes dataset
+- [ ] Add PASCAL VOC2012 dataset
 
 ### Reporting
 
