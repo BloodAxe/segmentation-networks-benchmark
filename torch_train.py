@@ -126,16 +126,16 @@ def get_model(model_name, num_classes=1):
         return UNet(num_classes=num_classes)
 
     if model_name == 'unet11':
-        return unet11.UNet11(num_classes=num_classes)
+        return unet11.UNet11(num_classes=num_classes,pretrained=True)
 
     if model_name == 'unet16':
-        return unet16.UNet16(num_classes=num_classes)
+        return unet16.UNet16(num_classes=num_classes,pretrained=True)
 
     if model_name == 'linknet34':
-        return linknet.LinkNet34(num_classes=num_classes)
+        return linknet.LinkNet34(num_classes=num_classes,pretrained=True)
 
     if model_name == 'albunet':
-        return albunet.AlbuNet(num_classes=num_classes)
+        return albunet.AlbuNet(num_classes=num_classes,pretrained=True)
 
     if model_name == 'tiramisu67':
         return FCDenseNet67(n_classes=num_classes)
