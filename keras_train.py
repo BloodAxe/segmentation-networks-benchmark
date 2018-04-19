@@ -1,12 +1,14 @@
 import numpy as np
 
+from lib.keras.keras_losses import dice_loss, jaccard_loss
+from lib.keras.dilated_resnet import DilatedResnet
+from lib.keras.dilated_unet import DilatedUnet
+from lib.keras.linknet import LinkNet
+from lib.keras.selunet import Selunet
+from lib.keras.tiramisu67 import Tiramisu67
+from lib.keras.zf_unet import ZF_UNET
 from lib.tiles import ImageSlicer
-from keras.dilated_resnet import DilatedResnet
-from keras.dilated_unet import DilatedUnet
-from keras.linknet import LinkNet
-from keras.selunet import Selunet
-from keras.tiramisu67 import Tiramisu67
-from keras.zf_unet import ZF_UNET
+
 
 import cv2
 import os.path
@@ -15,7 +17,6 @@ import pandas as pd
 import tensorflow as tf
 import keras.backend.tensorflow_backend as KTF
 
-from losses import dice_loss, jaccard_loss, bce_jaccard_loss, jaccard_coef
 from sklearn.model_selection import train_test_split
 from keras.callbacks import ModelCheckpoint
 from keras.optimizers import SGD, Adam, RMSprop

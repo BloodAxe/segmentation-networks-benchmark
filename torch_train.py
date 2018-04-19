@@ -3,7 +3,6 @@ import torch
 from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import BatchSampler, RandomSampler
-
 from lib.tiles import ImageSlicer
 from lib.torch import albunet, linknet, unet11, unet16
 
@@ -12,9 +11,15 @@ import os.path
 import argparse
 import pandas as pd
 
-from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss
+from lib.torch.tiramisu import FCDenseNet67
+from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss, JaccardScore
 from lib.torch.unet import UNet
 from sklearn.model_selection import train_test_split
+from lib.torch import common as T
+
+from tqdm import tqdm
+
+tqdm.monitor_interval = 0  # Workaround for https://github.com/tqdm/tqdm/issues/481
 
 
 def find_in_dir(dirname):
@@ -71,7 +76,7 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
             patch_images.extend(slicer.split(image))
             patch_masks.extend(slicer.split(mask))
 
-        return SimpleDataset(patch_images, patch_masks)
+        return patch_images, patch_masks
 
     raise ValueError(dataset_name)
 
@@ -109,23 +114,26 @@ def get_loss(loss):
     raise ValueError(loss)
 
 
-def get_model(model_name):
+def get_model(model_name, num_classes=1):
     model_name = str.lower(model_name)
 
     if model_name == 'unet':
-        return UNet(num_classes=1)
+        return UNet(num_classes=num_classes)
 
     if model_name == 'unet11':
-        return unet11.UNet11(num_classes=1)
+        return unet11.UNet11(num_classes=num_classes)
 
     if model_name == 'unet16':
-        return unet16.UNet16(num_classes=1)
+        return unet16.UNet16(num_classes=num_classes)
 
-    if model_name == 'linknet':
-        return linknet.LinkNet34(num_classes=1)
+    if model_name == 'linknet34':
+        return linknet.LinkNet34(num_classes=num_classes)
 
     if model_name == 'albunet':
-        return albunet.AlbuNet(num_classes=1)
+        return albunet.AlbuNet(num_classes=num_classes)
+
+    if model_name == 'tiramisu67':
+        return FCDenseNet67(n_classes=num_classes)
 
     raise ValueError(model_name)
 
@@ -134,33 +142,64 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def run_train_session(model_name: str, optimizer: str, loss, learning_rate, epochs, dataset_name, dataset_dir, experiment, grayscale, patch_size, batch_size):
+def validate(model: torch.nn.Module, criterion, metric, valid_loader):
+    model.eval()
+    losses = []
+    metrics = []
+
+    for inputs, targets in valid_loader:
+        inputs = T.variable(inputs, volatile=True)
+        targets = T.variable(targets)
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+        losses.append(loss.data[0])
+
+        s = metric(outputs, targets)
+        metrics.append(s.data[0])
+
+    return np.mean(losses), np.mean(metrics)
+
+
+def run_train_session(model_name: str, optimizer: str, loss, learning_rate: float, epochs: int, dataset_name: str, dataset_dir: str, experiment_dir: str,
+                      experiment: str, grayscale: bool, patch_size: int, batch_size: int):
     np.random.seed(42)
 
     os.makedirs(experiment, exist_ok=True)
 
-    ds = get_dataset(dataset_name, dataset_dir, grayscale=grayscale, patch_size=patch_size)
+    x, y = get_dataset(dataset_name, dataset_dir, grayscale=grayscale, patch_size=patch_size)
+    x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.2)
 
-    trainloader = DataLoader(ds, batch_size=batch_size, shuffle=True, pin_memory=True)
-
-    # x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.2)
+    trainloader = DataLoader(SimpleDataset(x_train, y_train), batch_size=batch_size, shuffle=True, pin_memory=True)
+    validloader = DataLoader(SimpleDataset(x_test, y_test), batch_size=batch_size, shuffle=False, pin_memory=True)
 
     model = get_model(model_name)
     model = model.cuda()
-    model.train()
-    print(model_name, count_parameters(model))
+    print('Training', model_name, 'Number of parameters', count_parameters(model))
 
     optim = get_optimizer(optimizer, model.parameters(), learning_rate)
     criterion = get_loss(loss)
+    jaccard_metric = JaccardScore()
+    report_each = 10
+
+    train_losses = []
+    valid_losses = []
+    train_metric = []
+    valid_metric = []
 
     for epoch in range(epochs):  # loop over the dataset multiple times
-        running_loss = 0.0
+        tq = tqdm(total=len(trainloader) * batch_size)
+        tq.set_description('Epoch {}, lr {}'.format(epoch, learning_rate))
+        trn_loss = []
+        trn_metric = []
+
+        model.train()
+
         for i, data in enumerate(trainloader, 0):
             # get the inputs
             x, y = data
 
             # wrap them in Variable
-            x, y = Variable(x).cuda(async=True), Variable(y).cuda(async=True)
+            x, y = T.variable(x), T.variable(y)
 
             # zero the parameter gradients
             optim.zero_grad()
@@ -168,19 +207,39 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate, epoc
             # forward + backward + optimize
             outputs = model(x)
             loss = criterion(outputs, y)
-            loss.backward()
+
+            bs = x.size(0)
+            (bs * loss).backward()
+
+            # Compute metrics
+            jaccard_score = jaccard_metric(outputs, y)
+
             optim.step()
 
-            # print statistics
-            running_loss += loss.data[0]
-            if i % 2000 == 1999:  # print every 2000 mini-batches
-                print('[%d, %5d] loss: %.3f' %
-                      (epoch + 1, i + 1, running_loss / 2000))
-                running_loss = 0.0
+            trn_loss.append(loss.data[0])
+            trn_metric.append(jaccard_score.data[0])
+
+            tq.update(bs)
+            mean_loss = np.mean(trn_loss[-report_each:])
+            mean_jaccard = np.mean(trn_metric[-report_each:])
+            tq.set_postfix(loss='{:.3f}'.format(mean_loss), jaccard='{:.3f}'.format(mean_jaccard))
+
+        val_loss, val_jaccard = validate(model, criterion, jaccard_metric, validloader)
+        trn_loss = np.mean(trn_loss)
+        trn_metric = np.mean(trn_metric)
+
+        valid_losses.append(val_loss)
+        train_losses.append(trn_loss)
+        train_metric.append(trn_metric)
+        valid_metric.append(val_jaccard)
+
+        print('loss=%.3f jaccard=%.3f val_loss=%.3f val_jaccard=%.3f' % (trn_loss, trn_metric, val_loss, val_jaccard))
 
     print('Training is finished...')
 
-    # pd.DataFrame(h.history).to_csv(os.path.join(experiment, experiment + '.csv'), index=False)
+    os.makedirs(experiment_dir, exist_ok=True)
+    pd.DataFrame.from_dict({'val_loss': valid_losses, 'loss': train_losses, 'val_jaccard': valid_metric, 'jaccard': train_metric})\
+                .to_csv(os.path.join(experiment_dir, experiment + '.csv'), index=False)
 
 
 def main():
@@ -202,7 +261,7 @@ def main():
     args = parser.parse_args()
 
     if args.experiment is None:
-        args.experiment = '%s_%d_%s_%s' % (args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
+        args.experiment = 'torch_%s_%d_%s_%s' % (args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
 
     run_train_session(model_name=args.model,
                       dataset_name=args.dataset,
@@ -211,6 +270,7 @@ def main():
                       batch_size=args.batch_size,
                       optimizer=args.optimizer,
                       learning_rate=args.learning_rate,
+                      experiment_dir=os.path.join('experiments', args.experiment),
                       experiment=args.experiment,
                       grayscale=args.grayscale,
                       loss=args.loss,
