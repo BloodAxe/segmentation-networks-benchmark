@@ -35,7 +35,7 @@ class JaccardScore(nn.Module):
         prediction = self.sigmoid(output)
         intersection = torch.sum(prediction * target)
         union = torch.sum(prediction) + torch.sum(target) + 1e-7
-        return 1 - intersection / (union - intersection)
+        return intersection / (union - intersection)
 
 
 class JaccardLoss(nn.Module):
