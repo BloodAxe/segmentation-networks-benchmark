@@ -144,6 +144,12 @@ def get_model(model_name, num_classes, patch_size):
     if model_name == 'gcn':
         return GCN(num_classes=num_classes, input_size=patch_size)
 
+    if model_name == 'psp_net':
+        return PSPNet(num_classes=num_classes, pretrained=True)
+
+    if model_name == 'seg_net':
+        return SegNet(num_classes=num_classes, pretrained=True)
+
     raise ValueError(model_name)
 
 
