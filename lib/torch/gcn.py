@@ -9,8 +9,8 @@ from torchvision import models
 class _GlobalConvModule(nn.Module):
     def __init__(self, in_dim, out_dim, kernel_size):
         super(_GlobalConvModule, self).__init__()
-        pad0 = (kernel_size[0] - 1) / 2
-        pad1 = (kernel_size[1] - 1) / 2
+        pad0 = (kernel_size[0] - 1) // 2
+        pad1 = (kernel_size[1] - 1) // 2
         # kernel size had better be odd number so as to avoid alignment error
         super(_GlobalConvModule, self).__init__()
         self.conv_l1 = nn.Conv2d(in_dim, out_dim, kernel_size=(kernel_size[0], 1),
@@ -62,6 +62,7 @@ class GCN(nn.Module):
     def __init__(self, num_classes, input_size, pretrained=True):
         super(GCN, self).__init__()
         self.input_size = input_size
+        self.num_classes = num_classes
         resnet = models.resnet152(pretrained)
 
         self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
