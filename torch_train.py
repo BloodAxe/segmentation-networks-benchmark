@@ -6,6 +6,9 @@ from torch.autograd import Variable
 from torch.backends import cudnn
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import BatchSampler, RandomSampler
+from torchvision.datasets import CocoDetection
+from torchvision.transforms import transforms
+
 from lib.tiles import ImageSlicer
 from lib.torch import albunet, linknet, unet11, unet16
 
@@ -15,6 +18,8 @@ import argparse
 import pandas as pd
 
 from lib.torch.gcn import GCN
+from lib.torch.psp_net import PSPNet
+from lib.torch.seg_net import SegNet
 from lib.torch.tiramisu import FCDenseNet67
 from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss, JaccardScore
 from lib.torch.unet import UNet
@@ -61,6 +66,14 @@ class SimpleDataset(Dataset):
 
 def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
     dataset_name = dataset_name.lower()
+
+    if dataset_name == 'coco':
+        return CocoDetection(root=os.path.join(dataset_dir, 'train'),
+                             annFile=os.path.join(dataset_dir, '.json'),
+                             transform=transforms.ToTensor()), \
+               CocoDetection(root=os.path.join(dataset_dir, 'train'),
+                             annFile=os.path.join(dataset_dir, '.json'),
+                             transform=transforms.ToTensor()),
 
     if dataset_name == 'dsb2018':
         images = find_in_dir(os.path.join(dataset_dir, 'images'))
@@ -127,16 +140,16 @@ def get_model(model_name, num_classes, patch_size):
         return UNet(num_classes=num_classes)
 
     if model_name == 'unet11':
-        return unet11.UNet11(num_classes=num_classes,pretrained=True)
+        return unet11.UNet11(num_classes=num_classes, pretrained=True)
 
     if model_name == 'unet16':
-        return unet16.UNet16(num_classes=num_classes,pretrained=True)
+        return unet16.UNet16(num_classes=num_classes, pretrained=True)
 
     if model_name == 'linknet34':
-        return linknet.LinkNet34(num_classes=num_classes,pretrained=True)
+        return linknet.LinkNet34(num_classes=num_classes, pretrained=True)
 
     if model_name == 'albunet':
-        return albunet.AlbuNet(num_classes=num_classes,pretrained=True)
+        return albunet.AlbuNet(num_classes=num_classes, pretrained=True)
 
     if model_name == 'tiramisu67':
         return FCDenseNet67(n_classes=num_classes)
@@ -254,16 +267,17 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
             best_loss = val_loss
             torch.save({
                 'model': model.state_dict(),
-                'epoch': epoch+1,
-                'loss' : best_loss,
+                'epoch': epoch + 1,
+                'loss': best_loss,
             }, os.path.join(experiment_dir, f'{model_name}_checkpoint.pth'))
 
     print('Training is finished...')
 
-    pd.DataFrame.from_dict({'val_loss': valid_losses, 'loss': train_losses, 'val_jaccard': valid_metric, 'jaccard': train_metric})\
-                .to_csv(os.path.join(experiment_dir, experiment + '.csv'), index=False)
+    pd.DataFrame.from_dict({'val_loss': valid_losses, 'loss': train_losses, 'val_jaccard': valid_metric, 'jaccard': train_metric}) \
+        .to_csv(os.path.join(experiment_dir, experiment + '.csv'), index=False)
 
     # plot_train_history(experiment, [train_losses, valid_metric],[train_metric, valid_metric])
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -287,7 +301,7 @@ def main():
         args.experiment = 'torch_%s_%d_%s_%s' % (args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
 
     experiment_dir = os.path.join('experiments', args.experiment)
-    os.makedirs(experiment_dir,exist_ok=True)
+    os.makedirs(experiment_dir, exist_ok=True)
     with open(os.path.join(experiment_dir, 'arguments.txt'), 'w') as f:
         f.write(' '.join(sys.argv[1:]))
 
@@ -303,7 +317,6 @@ def main():
                       grayscale=args.grayscale,
                       loss=args.loss,
                       epochs=args.epochs)
-
 
 
 if __name__ == '__main__':

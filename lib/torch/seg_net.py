@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torchvision import models
+from torch.nn import functional as F
 
 def initialize_weights(*models):
     for model in models:
@@ -17,7 +18,7 @@ def initialize_weights(*models):
 class _DecoderBlock(nn.Module):
     def __init__(self, in_channels, out_channels, num_conv_layers):
         super(_DecoderBlock, self).__init__()
-        middle_channels = in_channels / 2
+        middle_channels = in_channels // 2
         layers = [
             nn.ConvTranspose2d(in_channels, in_channels, kernel_size=2, stride=2),
             nn.Conv2d(in_channels, middle_channels, kernel_size=3, padding=1),
@@ -44,6 +45,7 @@ class SegNet(nn.Module):
     def __init__(self, num_classes, pretrained=True):
         super(SegNet, self).__init__()
         vgg = models.vgg19_bn(pretrained=pretrained)
+        self.num_classes = num_classes
 
         features = list(vgg.features.children())
         self.enc1 = nn.Sequential(*features[0:7])
@@ -76,4 +78,8 @@ class SegNet(nn.Module):
         dec3 = self.dec3(torch.cat([enc3, dec4], 1))
         dec2 = self.dec2(torch.cat([enc2, dec3], 1))
         dec1 = self.dec1(torch.cat([enc1, dec2], 1))
+
+        if self.num_classes > 1:
+            dec1 = F.log_softmax(dec1, dim=1)
+
         return dec1
