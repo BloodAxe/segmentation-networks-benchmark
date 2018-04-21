@@ -7,7 +7,7 @@ from torch.backends import cudnn
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchvision.datasets import CocoDetection
-from torchvision.transforms import transforms
+from torchvision import transforms as trans
 
 from lib.tiles import ImageSlicer
 from lib.torch import albunet, linknet, unet11, unet16
@@ -68,12 +68,27 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
     dataset_name = dataset_name.lower()
 
     if dataset_name == 'coco':
-        return CocoDetection(root=os.path.join(dataset_dir, 'train'),
-                             annFile=os.path.join(dataset_dir, '.json'),
-                             transform=transforms.ToTensor()), \
-               CocoDetection(root=os.path.join(dataset_dir, 'train'),
-                             annFile=os.path.join(dataset_dir, '.json'),
-                             transform=transforms.ToTensor()),
+        train_transform = trans.Compose([
+            trans.RandomCrop(patch_size),
+            trans.RandomHorizontalFlip(),
+            trans.RandomVerticalFlip(),
+            trans.RandomGrayscale(),
+            trans.ToTensor(),
+        ])
+
+        test_transform = trans.Compose([
+            trans.CenterCrop(patch_size),
+            trans.transforms.ToTensor(),
+        ])
+
+        num_classes = 182
+        return CocoDetection(root=os.path.join(dataset_dir, 'train2014'),
+                             annFile=os.path.join(dataset_dir, 'annotations_trainval2014','instances_train2014.json'),
+                             transform=train_transform), \
+               CocoDetection(root=os.path.join(dataset_dir, 'val2014'),
+                             annFile=os.path.join(dataset_dir, 'annotations_trainval2014', 'instances_val2014.json'),
+                             transform=test_transform),\
+               num_classes
 
     if dataset_name == 'dsb2018':
         images = find_in_dir(os.path.join(dataset_dir, 'images'))
@@ -95,7 +110,10 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
             patch_images.extend(slicer.split(image))
             patch_masks.extend(slicer.split(mask))
 
-        return patch_images, patch_masks
+        x_train, x_test, y_train, y_test = train_test_split(patch_images, patch_masks, random_state=1234, test_size=0.2)
+
+        num_classes = 1
+        return SimpleDataset(x_train, y_train), SimpleDataset(x_test, y_test), 1
 
     raise ValueError(dataset_name)
 
@@ -120,6 +138,9 @@ def get_loss(loss):
 
     if loss == 'bce':
         return torch.nn.BCEWithLogitsLoss()
+
+    if loss == 'nlll2d':
+        return torch.nn.NLLLoss2d()
 
     if loss == 'dice':
         return DiceLoss()
@@ -158,7 +179,7 @@ def get_model(model_name, num_classes, patch_size):
         return GCN(num_classes=num_classes, input_size=patch_size)
 
     if model_name == 'psp_net':
-        return PSPNet(num_classes=num_classes, pretrained=True)
+        return PSPNet(num_classes=num_classes, pretrained=True, use_aux=False)
 
     if model_name == 'seg_net':
         return SegNet(num_classes=num_classes, pretrained=True)
@@ -170,10 +191,11 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def validate(model: torch.nn.Module, criterion, metric, valid_loader):
+def validate(model: torch.nn.Module, criterion, metrics, valid_loader):
     model.eval()
     losses = []
-    metrics = []
+
+    metrics_scores = [] * len(metrics)
 
     for inputs, targets in valid_loader:
         inputs = T.variable(inputs, volatile=True)
@@ -182,29 +204,31 @@ def validate(model: torch.nn.Module, criterion, metric, valid_loader):
         loss = criterion(outputs, targets)
         losses.append(loss.data[0])
 
-        s = metric(outputs, targets)
-        metrics.append(s.data[0])
+        for i, metric in enumerate(metrics):
+            score = metric(outputs, targets)
+            metrics_scores[i].append(score.data[0])
 
-    return np.mean(losses), np.mean(metrics)
+    return np.mean(losses), metrics_scores
 
 
-def run_train_session(model_name: str, optimizer: str, loss, learning_rate: float, epochs: int, dataset_name: str, dataset_dir: str, experiment_dir: str,
-                      experiment: str, grayscale: bool, patch_size: int, batch_size: int):
+def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rate: float, epochs: int, dataset_name: str, dataset_dir: str, experiment_dir: str,
+                             experiment: str, grayscale: bool, patch_size: int, batch_size: int, workers: int):
     np.random.seed(42)
 
-    x, y = get_dataset(dataset_name, dataset_dir, grayscale=grayscale, patch_size=patch_size)
-    x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.2)
+    trainset, validset, num_classes = get_dataset(dataset_name, dataset_dir, grayscale=grayscale, patch_size=patch_size)
+    print('Train set size', len(trainset))
+    print('Valid set size', len(validset))
 
-    trainloader = DataLoader(SimpleDataset(x_train, y_train), batch_size=batch_size, shuffle=True, pin_memory=True)
-    validloader = DataLoader(SimpleDataset(x_test, y_test), batch_size=batch_size, shuffle=False, pin_memory=True)
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=workers)
+    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=workers)
 
-    model = get_model(model_name, num_classes=1, patch_size=patch_size)
+    model = get_model(model_name, num_classes=num_classes, patch_size=patch_size)
     model = model.cuda()
     print('Training', model_name, 'Number of parameters', count_parameters(model))
 
     optim = get_optimizer(optimizer, model.parameters(), learning_rate)
     criterion = get_loss(loss).cuda()
-    jaccard_metric = JaccardScore().cuda()
+    # jaccard_metric = JaccardScore().cuda()
     report_each = 10
 
     train_losses = []
@@ -243,25 +267,26 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
                 optim.step()
 
                 # Compute metrics
-                jaccard_score = jaccard_metric(outputs, y)
+                # jaccard_score = jaccard_metric(outputs, y)
 
                 trn_loss.append(loss.data[0])
-                trn_metric.append(jaccard_score.data[0])
+                # trn_metric.append(jaccard_score.data[0])
+                trn_metric.append(0)
 
                 tq.update(bs)
                 mean_loss = np.mean(trn_loss[-report_each:])
                 mean_jaccard = np.mean(trn_metric[-report_each:])
                 tq.set_postfix(loss='{:.3f}'.format(mean_loss), jaccard='{:.3f}'.format(mean_jaccard))
 
-        val_loss, val_jaccard = validate(model, criterion, jaccard_metric, validloader)
+        val_loss, val_metrics = validate(model, criterion, [], validloader)
         trn_loss = np.mean(trn_loss)
         trn_metric = np.mean(trn_metric)
 
         valid_losses.append(val_loss)
         train_losses.append(trn_loss)
         train_metric.append(trn_metric)
-        valid_metric.append(val_jaccard)
-        print('loss=%.3f jaccard=%.3f val_loss=%.3f val_jaccard=%.3f' % (trn_loss, trn_metric, val_loss, val_jaccard))
+        valid_metric.append(0)
+        print('loss=%.3f jaccard=%.3f val_loss=%.3f val_jaccard=%.3f' % (trn_loss, trn_metric, val_loss, 0))
 
         if val_loss < best_loss:
             best_loss = val_loss
@@ -274,9 +299,7 @@ def run_train_session(model_name: str, optimizer: str, loss, learning_rate: floa
     print('Training is finished...')
 
     pd.DataFrame.from_dict({'val_loss': valid_losses, 'loss': train_losses, 'val_jaccard': valid_metric, 'jaccard': train_metric}) \
-        .to_csv(os.path.join(experiment_dir, experiment + '.csv'), index=False)
-
-    # plot_train_history(experiment, [train_losses, valid_metric],[train_metric, valid_metric])
+                .to_csv(os.path.join(experiment_dir, experiment + '.csv'), index=False)
 
 
 def main():
@@ -294,29 +317,31 @@ def main():
     parser.add_argument('-dd', '--data-dir', type=str, default='data', help='Root directory where datasets are located.')
     parser.add_argument('-s', '--steps', type=int, default=128, help='Steps per epoch')
     parser.add_argument('-x', '--experiment', type=str, help='Name of the experiment')
+    parser.add_argument('-w', '--workers', default=0, type=int, help='Num workers')
 
     args = parser.parse_args()
 
     if args.experiment is None:
-        args.experiment = 'torch_%s_%d_%s_%s' % (args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
+        args.experiment = 'torch_%s_%s_%d_%s_%s' % (args.dataset, args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
 
     experiment_dir = os.path.join('experiments', args.experiment)
     os.makedirs(experiment_dir, exist_ok=True)
     with open(os.path.join(experiment_dir, 'arguments.txt'), 'w') as f:
         f.write(' '.join(sys.argv[1:]))
 
-    run_train_session(model_name=args.model,
-                      dataset_name=args.dataset,
-                      dataset_dir=args.data_dir,
-                      patch_size=args.patch_size,
-                      batch_size=args.batch_size,
-                      optimizer=args.optimizer,
-                      learning_rate=args.learning_rate,
-                      experiment_dir=experiment_dir,
-                      experiment=args.experiment,
-                      grayscale=args.grayscale,
-                      loss=args.loss,
-                      epochs=args.epochs)
+    run_train_session_binary(model_name=args.model,
+                             dataset_name=args.dataset,
+                             dataset_dir=args.data_dir,
+                             patch_size=args.patch_size,
+                             batch_size=args.batch_size,
+                             optimizer=args.optimizer,
+                             learning_rate=args.learning_rate,
+                             experiment_dir=os.path.normpath(experiment_dir),
+                             experiment=args.experiment,
+                             grayscale=args.grayscale,
+                             loss=args.loss,
+                             epochs=args.epochs,
+                             workers=args.workers)
 
 
 if __name__ == '__main__':
