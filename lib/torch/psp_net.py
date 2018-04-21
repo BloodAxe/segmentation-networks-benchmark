@@ -43,6 +43,8 @@ class PSPNet(nn.Module):
     def __init__(self, num_classes, pretrained=True, use_aux=True):
         super(PSPNet, self).__init__()
         self.use_aux = use_aux
+        self.num_classes = num_classes
+
         resnet = models.resnet101(pretrained)
 
         self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
@@ -85,6 +87,13 @@ class PSPNet(nn.Module):
         x = self.layer4(x)
         x = self.ppm(x)
         x = self.final(x)
+
         if self.training and self.use_aux:
-            return F.upsample(x, x_size[2:], mode='bilinear'), F.upsample(aux, x_size[2:], mode='bilinear')
-        return F.upsample(x, x_size[2:], mode='bilinear')
+            out = F.upsample(x, x_size[2:], mode='bilinear'), F.upsample(aux, x_size[2:], mode='bilinear')
+        else:
+            out = F.upsample(x, x_size[2:], mode='bilinear')
+
+        if self.num_classes > 1:
+            out = F.log_softmax(out, dim=1)
+
+        return out
