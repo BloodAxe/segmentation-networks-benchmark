@@ -113,7 +113,7 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
         x_train, x_test, y_train, y_test = train_test_split(patch_images, patch_masks, random_state=1234, test_size=0.2)
 
         num_classes = 1
-        return SimpleDataset(x_train, y_train), SimpleDataset(x_test, y_test), 1
+        return SimpleDataset(x_train, y_train), SimpleDataset(x_test, y_test), num_classes
 
     raise ValueError(dataset_name)
 
@@ -137,19 +137,19 @@ def get_loss(loss):
     loss = loss.lower()
 
     if loss == 'bce':
-        return torch.nn.BCEWithLogitsLoss()
-
-    if loss == 'nlll2d':
-        return torch.nn.NLLLoss2d()
+        return torch.nn.BCEWithLogitsLoss(), [JaccardScore()]
 
     if loss == 'dice':
-        return DiceLoss()
+        return DiceLoss(), [JaccardScore()]
 
     if loss == 'jaccard':
-        return JaccardLoss()
+        return JaccardLoss(), [JaccardScore()]
 
     if loss == 'bce_jaccard':
-        return BCEWithLogitsLossAndJaccard(jaccard_weight=1)
+        return BCEWithLogitsLossAndJaccard(jaccard_weight=1), [JaccardScore()]
+
+    if loss == 'nlll2d':
+        return torch.nn.NLLLoss2d(), []
 
     raise ValueError(loss)
 
@@ -227,8 +227,12 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
     print('Training', model_name, 'Number of parameters', count_parameters(model))
 
     optim = get_optimizer(optimizer, model.parameters(), learning_rate)
-    criterion = get_loss(loss).cuda()
-    # jaccard_metric = JaccardScore().cuda()
+    criterion, metrics = get_loss(loss)
+
+    criterion = criterion.cuda()
+    metrics = [m.cuda() for m in metrics]
+    train_metric_scores = [] * len(metrics)
+
     report_each = 10
 
     train_losses = []
@@ -267,10 +271,11 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 optim.step()
 
                 # Compute metrics
-                # jaccard_score = jaccard_metric(outputs, y)
+                for metric_index, metric in enumerate(metrics):
+                    score = metric(outputs, y)
+                    train_metric_scores[metric_index].append(score.data[0])
 
                 trn_loss.append(loss.data[0])
-                # trn_metric.append(jaccard_score.data[0])
                 trn_metric.append(0)
 
                 tq.update(bs)
@@ -278,15 +283,14 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 mean_jaccard = np.mean(trn_metric[-report_each:])
                 tq.set_postfix(loss='{:.3f}'.format(mean_loss), jaccard='{:.3f}'.format(mean_jaccard))
 
-        val_loss, val_metrics = validate(model, criterion, [], validloader)
+        val_loss, val_metric_scores = validate(model, criterion, metrics, validloader)
         trn_loss = np.mean(trn_loss)
-        trn_metric = np.mean(trn_metric)
 
         valid_losses.append(val_loss)
         train_losses.append(trn_loss)
         train_metric.append(trn_metric)
         valid_metric.append(0)
-        print('loss=%.3f jaccard=%.3f val_loss=%.3f val_jaccard=%.3f' % (trn_loss, trn_metric, val_loss, 0))
+        print('loss=%.3f val_loss=%.3f' % (trn_loss, val_loss))
 
         if val_loss < best_loss:
             best_loss = val_loss
