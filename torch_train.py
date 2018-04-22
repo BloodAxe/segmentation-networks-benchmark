@@ -17,6 +17,7 @@ import os.path
 import argparse
 import pandas as pd
 
+from lib.torch.ImageMaskDataset import ImageMaskDataset
 from lib.torch.gcn import GCN
 from lib.torch.psp_net import PSPNet
 from lib.torch.seg_net import SegNet
@@ -89,6 +90,21 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
                              annFile=os.path.join(dataset_dir, 'annotations_trainval2014', 'instances_val2014.json'),
                              transform=test_transform),\
                num_classes
+
+    if dataset_name == 'inria':
+        def read_rgb(fname):
+            return cv2.imread(fname, cv2.IMREAD_COLOR)
+
+        def read_gray(fname):
+            return np.expand_dims(cv2.imread(fname, cv2.IMREAD_GRAYSCALE), axis=-1)
+
+        x = find_in_dir(dataset_dir)
+        y = find_in_dir(dataset_dir)
+        x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.2)
+
+        train = ImageMaskDataset(x_train, y_train, image_loader=read_rgb, target_loader=read_gray)
+        test = ImageMaskDataset(x_test, y_test, image_loader=read_rgb, target_loader=read_gray)
+        return train, test
 
     if dataset_name == 'dsb2018':
         images = find_in_dir(os.path.join(dataset_dir, 'images'))
