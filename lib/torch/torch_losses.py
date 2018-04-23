@@ -37,6 +37,8 @@ class JaccardScore(nn.Module):
         union = torch.sum(prediction) + torch.sum(target) + 1e-7
         return intersection / (union - intersection)
 
+    def __str__(self):
+        return 'JaccardScore'
 
 class JaccardLoss(nn.Module):
     def __init__(self):

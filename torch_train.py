@@ -1,5 +1,5 @@
 import sys
-
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.autograd import Variable
@@ -8,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchvision.datasets import CocoDetection
 from torchvision import transforms as trans
+from torchvision.utils import make_grid
 
 from lib.tiles import ImageSlicer
 from lib.torch import albunet, linknet, unet11, unet16
@@ -18,15 +19,16 @@ import argparse
 import pandas as pd
 
 from lib.torch.ImageMaskDataset import ImageMaskDataset
+from lib.torch.factorized_unet11 import FactorizedUNet11
 from lib.torch.gcn import GCN
 from lib.torch.psp_net import PSPNet
-from lib.torch.seg_net import SegNet
+from lib.torch.seg_net import SegCaps
 from lib.torch.tiramisu import FCDenseNet67
 from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss, JaccardScore
 from lib.torch.unet import UNet
 from sklearn.model_selection import train_test_split
 from lib.torch import common as T
-
+from lib import augmentations as aug
 from tqdm import tqdm
 
 from plot import plot_train_history
@@ -36,6 +38,16 @@ tqdm.monitor_interval = 0  # Workaround for https://github.com/tqdm/tqdm/issues/
 
 def find_in_dir(dirname):
     return [os.path.join(dirname, fname) for fname in os.listdir(dirname)]
+
+
+def read_rgb(fname):
+    x = cv2.imread(fname, cv2.IMREAD_COLOR)
+    return x
+
+
+def read_gray(fname):
+    x = np.expand_dims(cv2.imread(fname, cv2.IMREAD_GRAYSCALE), axis=-1)
+    return x
 
 
 def to_float_tensor(img: np.ndarray):
@@ -84,27 +96,42 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
 
         num_classes = 182
         return CocoDetection(root=os.path.join(dataset_dir, 'train2014'),
-                             annFile=os.path.join(dataset_dir, 'annotations_trainval2014','instances_train2014.json'),
+                             annFile=os.path.join(dataset_dir, 'annotations_trainval2014', 'instances_train2014.json'),
                              transform=train_transform), \
                CocoDetection(root=os.path.join(dataset_dir, 'val2014'),
                              annFile=os.path.join(dataset_dir, 'annotations_trainval2014', 'instances_val2014.json'),
-                             transform=test_transform),\
+                             transform=test_transform), \
                num_classes
 
     if dataset_name == 'inria':
-        def read_rgb(fname):
-            return cv2.imread(fname, cv2.IMREAD_COLOR)
+        x = find_in_dir(os.path.join(dataset_dir, 'images'))
+        y = find_in_dir(os.path.join(dataset_dir, 'gt'))
 
-        def read_gray(fname):
-            return np.expand_dims(cv2.imread(fname, cv2.IMREAD_GRAYSCALE), axis=-1)
+        x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.1)
 
-        x = find_in_dir(dataset_dir)
-        y = find_in_dir(dataset_dir)
-        x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.2)
+        train_transform = aug.Sequential([
+            # aug.RandomCrop(224),
+            aug.VerticalFlip(),
+            aug.HorizontalFlip(),
+            # aug.ImageOnly(trans.RandomGrayscale()),
+            aug.ImageOnly(aug.RandomBrightness()),
+            aug.ImageOnly(aug.RandomContrast()),
+            aug.ImageOnly(aug.ScaleImage()),
+            aug.MaskOnly(aug.MakeBinary()),
+            aug.ToTensors()
+        ])
 
-        train = ImageMaskDataset(x_train, y_train, image_loader=read_rgb, target_loader=read_gray)
-        test = ImageMaskDataset(x_test, y_test, image_loader=read_rgb, target_loader=read_gray)
-        return train, test
+        test_transform = aug.Sequential([
+            # aug.CenterCrop(patch_size, patch_size),
+            aug.ImageOnly(aug.ScaleImage()),
+            aug.MaskOnly(aug.MakeBinary()),
+            aug.ToTensors()
+        ])
+
+        train = ImageMaskDataset(x_train, y_train, image_loader=read_rgb, target_loader=read_gray, transform=train_transform, load_in_ram=False)
+        test = ImageMaskDataset(x_test, y_test, image_loader=read_rgb, target_loader=read_gray, transform=test_transform, load_in_ram=False)
+        num_classes = 1
+        return train, test, num_classes
 
     if dataset_name == 'dsb2018':
         images = find_in_dir(os.path.join(dataset_dir, 'images'))
@@ -179,6 +206,9 @@ def get_model(model_name, num_classes, patch_size):
     if model_name == 'unet11':
         return unet11.UNet11(num_classes=num_classes, pretrained=True)
 
+    if model_name == 'factorized_unet11':
+        return FactorizedUNet11(num_classes=num_classes, pretrained=True)
+
     if model_name == 'unet16':
         return unet16.UNet16(num_classes=num_classes, pretrained=True)
 
@@ -211,7 +241,7 @@ def validate(model: torch.nn.Module, criterion, metrics, valid_loader):
     model.eval()
     losses = []
 
-    metrics_scores = [] * len(metrics)
+    metrics_scores = [[]] * len(metrics)
 
     for inputs, targets in valid_loader:
         inputs = T.variable(inputs, volatile=True)
@@ -220,15 +250,29 @@ def validate(model: torch.nn.Module, criterion, metrics, valid_loader):
         loss = criterion(outputs, targets)
         losses.append(loss.data[0])
 
-        for i, metric in enumerate(metrics):
+        for metric_index, metric in enumerate(metrics):
             score = metric(outputs, targets)
-            metrics_scores[i].append(score.data[0])
+            metrics_scores[metric_index].append(score.data[0])
 
-    return np.mean(losses), metrics_scores
+    return losses, metrics_scores
+
+
+def show_landmarks_batch(data):
+    x, y = data
+
+    grid_x = make_grid(x, normalize=True, scale_each=True)
+    grid_y = make_grid(y, normalize=True, scale_each=True)
+    f, (ax1, ax2) = plt.subplots(2, 1)
+
+    ax1.imshow(grid_x.numpy().transpose((1, 2, 0)))
+    ax2.imshow(grid_y.numpy().transpose((1, 2, 0)))
+
+    plt.title('Batch from dataloader')
+    plt.show()
 
 
 def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rate: float, epochs: int, dataset_name: str, dataset_dir: str, experiment_dir: str,
-                             experiment: str, grayscale: bool, patch_size: int, batch_size: int, workers: int):
+                             experiment: str, grayscale: bool, patch_size: int, batch_size: int, workers: int, resume: bool):
     np.random.seed(42)
 
     trainset, validset, num_classes = get_dataset(dataset_name, dataset_dir, grayscale=grayscale, patch_size=patch_size)
@@ -236,7 +280,10 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
     print('Valid set size', len(validset))
 
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=workers)
-    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=workers)
+    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False, pin_memory=False)
+
+    show_landmarks_batch(next(trainloader.__iter__()))
+    show_landmarks_batch(next(validloader.__iter__()))
 
     model = get_model(model_name, num_classes=num_classes, patch_size=patch_size)
     model = model.cuda()
@@ -247,31 +294,41 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
 
     criterion = criterion.cuda()
     metrics = [m.cuda() for m in metrics]
-    train_metric_scores = [] * len(metrics)
 
+    start_epoch = 0
     report_each = 10
-
-    train_losses = []
-    valid_losses = []
-    train_metric = []
-    valid_metric = []
     best_loss = np.inf
 
     cudnn.benchmark = True
 
-    for epoch in range(epochs):  # loop over the dataset multiple times
-        trn_loss = []
-        trn_metric = []
+    train_history = {
+        'loss': [],
+        'val_loss': [],
+        'epoch': []
+    }
+
+    checkpoint_filename = os.path.join(experiment_dir, f'{model_name}_checkpoint.pth')
+    if resume:
+        checkpoint = torch.load(checkpoint_filename)
+        start_epoch = checkpoint['epoch']
+        best_loss = checkpoint['loss']
+        model.load_state_dict(checkpoint['model'])
+        print('Resuming training from epoch', start_epoch, ' and loss', best_loss)
+
+    for m in metrics:
+        train_history[str(m)] = []
+        train_history['val_' + str(m)] = []
+
+    for epoch in range(start_epoch, epochs):  # loop over the dataset multiple times
+        trn_losses = []
+        trn_metric_scores = [[]] * len(metrics)
+
         model.train()
 
         with tqdm(total=len(trainloader) * batch_size) as tq:
             tq.set_description('Epoch {}, lr {}'.format(epoch, learning_rate))
 
-            for i, data in enumerate(trainloader, 0):
-                # get the inputs
-                x, y = data
-
-                # wrap them in Variable
+            for i, (x, y) in enumerate(trainloader, 0):
                 x, y = T.variable(x), T.variable(y)
 
                 # zero the parameter gradients
@@ -289,37 +346,45 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 # Compute metrics
                 for metric_index, metric in enumerate(metrics):
                     score = metric(outputs, y)
-                    train_metric_scores[metric_index].append(score.data[0])
+                    trn_metric_scores[metric_index].append(score.data[0])
 
-                trn_loss.append(loss.data[0])
-                trn_metric.append(0)
+                trn_losses.append(loss.data[0])
 
                 tq.update(bs)
-                mean_loss = np.mean(trn_loss[-report_each:])
-                mean_jaccard = np.mean(trn_metric[-report_each:])
-                tq.set_postfix(loss='{:.3f}'.format(mean_loss), jaccard='{:.3f}'.format(mean_jaccard))
+                mean_loss = np.mean(trn_losses[-report_each:])
+                tq.set_postfix(loss='{:.3f}'.format(mean_loss))
 
-        val_loss, val_metric_scores = validate(model, criterion, metrics, validloader)
-        trn_loss = np.mean(trn_loss)
+        val_losses, val_metric_scores = validate(model, criterion, metrics, validloader)
+        val_loss = np.mean(val_losses)
+        trn_loss = np.mean(trn_losses)
 
-        valid_losses.append(val_loss)
-        train_losses.append(trn_loss)
-        train_metric.append(trn_metric)
-        valid_metric.append(0)
-        print('loss=%.3f val_loss=%.3f' % (trn_loss, val_loss))
+        train_history['epoch'].append(epoch)
+        train_history['loss'].append(trn_loss)
+        train_history['val_loss'].append(val_loss)
+        for m, scores in zip(metrics, trn_metric_scores):
+            train_history[str(m)].append(np.mean(scores))
+        for m, scores in zip(metrics, val_metric_scores):
+            train_history['val_' + str(m)].append(np.mean(scores))
+
+        trn_metric_str = ['%s=%.3f' % i for i in [(str(m), np.mean(scores)) for m, scores in zip(metrics, trn_metric_scores)]]
+        val_metric_str = ['val_%s=%.3f' % i for i in [(str(m), np.mean(scores)) for m, scores in zip(metrics, val_metric_scores)]]
+
+        print('loss=%.3f val_loss=%.3f' % (trn_loss, val_loss), ' '.join(trn_metric_str + val_metric_str))
 
         if val_loss < best_loss:
             best_loss = val_loss
             torch.save({
                 'model': model.state_dict(),
-                'epoch': epoch + 1,
+                'epoch': epoch,
                 'loss': best_loss,
-            }, os.path.join(experiment_dir, f'{model_name}_checkpoint.pth'))
+            }, checkpoint_filename)
 
     print('Training is finished...')
 
-    pd.DataFrame.from_dict({'val_loss': valid_losses, 'loss': train_losses, 'val_jaccard': valid_metric, 'jaccard': train_metric}) \
-                .to_csv(os.path.join(experiment_dir, experiment + '.csv'), index=False)
+    pd.DataFrame.from_dict(train_history).to_csv(os.path.join(experiment_dir, experiment + '.csv'),
+                                                 index=False,
+                                                 mode='w' if resume is None else 'a',
+                                                 header=resume is None)
 
 
 def main():
@@ -338,6 +403,7 @@ def main():
     parser.add_argument('-s', '--steps', type=int, default=128, help='Steps per epoch')
     parser.add_argument('-x', '--experiment', type=str, help='Name of the experiment')
     parser.add_argument('-w', '--workers', default=0, type=int, help='Num workers')
+    parser.add_argument('-r', '--resume', action='store_true')
 
     args = parser.parse_args()
 
@@ -357,6 +423,7 @@ def main():
                              optimizer=args.optimizer,
                              learning_rate=args.learning_rate,
                              experiment_dir=os.path.normpath(experiment_dir),
+                             resume=args.resume,
                              experiment=args.experiment,
                              grayscale=args.grayscale,
                              loss=args.loss,
