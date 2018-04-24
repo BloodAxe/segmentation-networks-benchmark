@@ -130,6 +130,10 @@ class CapsuleLayer(nn.Module):
 
 
 class SegCaps(nn.Module):
+    """
+    https://arxiv.org/pdf/1804.04241.pdf
+    https://github.com/iwyoo/tf-SegCaps/blob/master/model.py
+    """
     def __init__(self, num_classes=1, input_channels=3):
         super(SegCaps, self).__init__()
 
