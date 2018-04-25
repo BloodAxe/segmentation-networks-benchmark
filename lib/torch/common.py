@@ -24,7 +24,7 @@ from torchvision.utils import make_grid
 cuda_is_available = torch.cuda.is_available()
 
 
-def cuda(x):
+def maybe_cuda(x):
     return x.cuda() if cuda_is_available else x
 
 
