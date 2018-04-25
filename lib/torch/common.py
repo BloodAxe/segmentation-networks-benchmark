@@ -19,15 +19,31 @@ from torch import nn
 from torch.autograd import Variable
 from torchvision.transforms import ToTensor, Normalize, Compose
 import tqdm
+from torchvision.utils import make_grid
 
 cuda_is_available = torch.cuda.is_available()
 
 
-def variable(x, volatile=False):
-    if isinstance(x, (list, tuple)):
-        return [variable(y, volatile=volatile) for y in x]
-    return cuda(Variable(x, volatile=volatile))
-
-
 def cuda(x):
     return x.cuda() if cuda_is_available else x
+
+
+def to_float_tensor(img: np.ndarray):
+    # .copy() because RuntimeError: some of the strides of a given numpy array are negative.
+    #  This is currently not supported, but will be added in future releases.
+    # https://discuss.pytorch.org/t/torch-from-numpy-not-support-negative-strides/3663
+    tensor = torch.from_numpy(np.moveaxis(img, -1, 0)).float()
+    return tensor
+
+def show_landmarks_batch(data):
+    x, y = data
+
+    grid_x = make_grid(x, normalize=True, scale_each=True)
+    grid_y = make_grid(y, normalize=True, scale_each=True)
+    f, (ax1, ax2) = plt.subplots(2, 1)
+
+    ax1.imshow(grid_x.numpy().transpose((1, 2, 0)))
+    ax2.imshow(grid_y.numpy().transpose((1, 2, 0)))
+
+    plt.title('Batch from dataloader')
+    plt.show()

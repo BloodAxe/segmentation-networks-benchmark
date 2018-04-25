@@ -2,7 +2,6 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.autograd import Variable
 from torch.backends import cudnn
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import BatchSampler, RandomSampler
@@ -19,13 +18,14 @@ import argparse
 import pandas as pd
 
 from lib.torch.ImageMaskDataset import ImageMaskDataset
+from lib.torch.common import to_float_tensor
 from lib.torch.factorized_unet11 import FactorizedUNet11
 from lib.torch.gcn import GCN
 from lib.torch.psp_net import PSPNet
 from lib.torch.seg_net import SegCaps
 from lib.torch.tiramisu import FCDenseNet67
 from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss, JaccardScore
-from lib.torch.unet import UNet
+from lib.torch.unet import UNet, FactorizedUNet
 from sklearn.model_selection import train_test_split
 from lib.torch import common as T
 from lib import augmentations as aug
@@ -50,12 +50,7 @@ def read_gray(fname):
     return x
 
 
-def to_float_tensor(img: np.ndarray):
-    # .copy() because RuntimeError: some of the strides of a given numpy array are negative.
-    #  This is currently not supported, but will be added in future releases.
-    # https://discuss.pytorch.org/t/torch-from-numpy-not-support-negative-strides/3663
-    tensor = torch.from_numpy(np.moveaxis(img, -1, 0)).float()
-    return tensor
+
 
 
 def normalize_image(x: np.ndarray):
@@ -203,6 +198,9 @@ def get_model(model_name, num_classes, patch_size):
     if model_name == 'unet':
         return UNet(num_classes=num_classes)
 
+    if model_name == 'factorized_unet':
+        return FactorizedUNet(num_classes=num_classes)
+
     if model_name == 'unet11':
         return unet11.UNet11(num_classes=num_classes, pretrained=True)
 
@@ -227,8 +225,8 @@ def get_model(model_name, num_classes, patch_size):
     if model_name == 'psp_net':
         return PSPNet(num_classes=num_classes, pretrained=True, use_aux=False)
 
-    if model_name == 'seg_net':
-        return SegNet(num_classes=num_classes, pretrained=True)
+    if model_name == 'seg_caps':
+        return SegCaps(num_classes=num_classes)
 
     raise ValueError(model_name)
 
@@ -244,7 +242,7 @@ def validate(model: torch.nn.Module, criterion, metrics, valid_loader):
     metrics_scores = [[]] * len(metrics)
 
     for inputs, targets in valid_loader:
-        inputs = T.variable(inputs, volatile=True)
+        inputs = T.variable(inputs)
         targets = T.variable(targets)
         outputs = model(inputs)
         loss = criterion(outputs, targets)
@@ -257,18 +255,7 @@ def validate(model: torch.nn.Module, criterion, metrics, valid_loader):
     return losses, metrics_scores
 
 
-def show_landmarks_batch(data):
-    x, y = data
 
-    grid_x = make_grid(x, normalize=True, scale_each=True)
-    grid_y = make_grid(y, normalize=True, scale_each=True)
-    f, (ax1, ax2) = plt.subplots(2, 1)
-
-    ax1.imshow(grid_x.numpy().transpose((1, 2, 0)))
-    ax2.imshow(grid_y.numpy().transpose((1, 2, 0)))
-
-    plt.title('Batch from dataloader')
-    plt.show()
 
 
 def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rate: float, epochs: int, dataset_name: str, dataset_dir: str, experiment_dir: str,
@@ -280,7 +267,7 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
     print('Valid set size', len(validset))
 
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=workers)
-    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False, pin_memory=False)
+    validloader = DataLoader(validset, batch_size=1, shuffle=False, pin_memory=True)
 
     show_landmarks_batch(next(trainloader.__iter__()))
     show_landmarks_batch(next(validloader.__iter__()))
@@ -302,9 +289,9 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
     cudnn.benchmark = True
 
     train_history = {
+        'epoch': [],
         'loss': [],
-        'val_loss': [],
-        'epoch': []
+        'val_loss': []
     }
 
     checkpoint_filename = os.path.join(experiment_dir, f'{model_name}_checkpoint.pth')
@@ -329,7 +316,7 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
             tq.set_description('Epoch {}, lr {}'.format(epoch, learning_rate))
 
             for i, (x, y) in enumerate(trainloader, 0):
-                x, y = T.variable(x), T.variable(y)
+                x, y = x.cuda(), y.cuda()
 
                 # zero the parameter gradients
                 optim.zero_grad()
@@ -346,9 +333,9 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 # Compute metrics
                 for metric_index, metric in enumerate(metrics):
                     score = metric(outputs, y)
-                    trn_metric_scores[metric_index].append(score.data[0])
+                    trn_metric_scores[metric_index].append(score.data.item())
 
-                trn_losses.append(loss.data[0])
+                trn_losses.append(loss.data.item())
 
                 tq.update(bs)
                 mean_loss = np.mean(trn_losses[-report_each:])
