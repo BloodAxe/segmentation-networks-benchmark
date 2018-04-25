@@ -7,7 +7,7 @@ from torch.nn import functional as F
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 
-from lib.torch.common import to_float_tensor, show_landmarks_batch
+from lib.torch.common import to_float_tensor, show_landmarks_batch, maybe_cuda
 
 
 def _squash(p: torch.Tensor):
@@ -32,7 +32,11 @@ class RoutingSoftmax(nn.Module):
             self.padding = nn.ZeroPad2d(kernel_size // 2)
 
         self.maxpool = nn.MaxPool2d(kernel_size=kernel_size, stride=1, padding=0)
-        self.one_kernel = torch.ones([1, t, kernel_size, kernel_size])
+        self.one_kernel = maybe_cuda(torch.ones([1, t, kernel_size, kernel_size]))
+
+        self.add_module('padding', self.padding)
+        self.add_module('maxpool', self.maxpool)
+        # self.register_buffer('one_kernel', self.one_kernel)
 
     def forward(self, b_t):
         b_t_pad = self.padding(b_t)
@@ -73,6 +77,9 @@ class CapsuleLayer(nn.Module):
         elif mode == 'deconv':
             self.convOp = nn.ConvTranspose2d(input_channels, capsule_dims * num_capsules, kernel_size=kernel_size, stride=stride, padding=1)
 
+        self.add_module('convOp', self.convOp)
+        self.add_module('routing_softmax', self.routing_softmax)
+
     def forward(self, x: torch.autograd.Variable):
         # X is [N, num_capsules, in_capsule_dims, H, W]
 
@@ -96,7 +103,7 @@ class CapsuleLayer(nn.Module):
             u_hat_t = u_hat_t.view([N, t_1, z_1, H_1, W_1])
             u_hat_t_list.append(u_hat_t)
 
-        b = torch.zeros([N, t_1, t_0, H_1, W_1])
+        b = maybe_cuda(torch.zeros([N, t_1, t_0, H_1, W_1]))
         b_t_list = [torch.squeeze(b_t, dim=2) for b_t in torch.split(b, 1, dim=2)]  # Splits into t_0 chunks
         u_hat_t_list_sg = [u_hat_t.detach() for u_hat_t in u_hat_t_list]
 
@@ -239,7 +246,7 @@ class SegCapsLoss:
 
     def __call__(self, outputs, targets):
         v_lens, recons = outputs
-        v_lens_true, recons_true = y
+        v_lens_true, recons_true = targets
         loss1 = self._class_loss(v_lens, v_lens_true)
         loss2 = self._reconstruction_loss(recons, recons_true) * self.reconstruction_weight
         return loss1 + loss2
@@ -295,31 +302,34 @@ class SyntheticShapes(Dataset):
 
 if __name__ == "__main__":
 
-    trainloader = DataLoader(SyntheticShapes(512), batch_size=3)
+    trainloader = DataLoader(SyntheticShapes(512), batch_size=3, pin_memory=True)
     test_x, test_y = next(iter(trainloader))
 
     show_landmarks_batch((test_x, test_y))
 
-    model = SegCaps(num_classes=1, input_channels=3)
-    model.train()
+    model = SegCaps(num_classes=1, input_channels=3).cuda()
     criterion = SegCapsLoss()
 
     optim = torch.optim.SGD(model.parameters(), lr=0.001)
 
     for epoch in range(10):
-
+        model.train()
         for i, (x, y) in enumerate(trainloader):
-            # x, y = x.cuda(), y.cuda()
+            x, y = x.cuda(), y.cuda()
 
             # zero the parameter gradients
             optim.zero_grad()
 
             # forward + backward + optimize
             outputs = model(x)
-            loss = criterion(outputs, y)
+            loss = criterion(outputs, (y,x))
 
             bs = x.size(0)
             (bs * loss).backward()
 
             optim.step()
             print(epoch, i, loss)
+
+        model.test()
+        y, rec = model(test_x)
+        show_landmarks_batch((rec, y))
