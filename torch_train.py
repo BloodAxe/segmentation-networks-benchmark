@@ -18,7 +18,7 @@ import argparse
 import pandas as pd
 
 from lib.torch.ImageMaskDataset import ImageMaskDataset
-from lib.torch.common import to_float_tensor
+from lib.torch.common import to_float_tensor, show_landmarks_batch
 from lib.torch.factorized_unet11 import FactorizedUNet11
 from lib.torch.gcn import GCN
 from lib.torch.psp_net import PSPNet
@@ -48,9 +48,6 @@ def read_rgb(fname):
 def read_gray(fname):
     x = np.expand_dims(cv2.imread(fname, cv2.IMREAD_GRAYSCALE), axis=-1)
     return x
-
-
-
 
 
 def normalize_image(x: np.ndarray):
@@ -242,8 +239,7 @@ def validate(model: torch.nn.Module, criterion, metrics, valid_loader):
     metrics_scores = [[]] * len(metrics)
 
     for inputs, targets in valid_loader:
-        inputs = T.variable(inputs)
-        targets = T.variable(targets)
+        inputs, targets = inputs.cuda(), targets.cuda()
         outputs = model(inputs)
         loss = criterion(outputs, targets)
         losses.append(loss.data[0])
@@ -253,9 +249,6 @@ def validate(model: torch.nn.Module, criterion, metrics, valid_loader):
             metrics_scores[metric_index].append(score.data[0])
 
     return losses, metrics_scores
-
-
-
 
 
 def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rate: float, epochs: int, dataset_name: str, dataset_dir: str, experiment_dir: str,
