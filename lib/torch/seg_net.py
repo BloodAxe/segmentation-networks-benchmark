@@ -54,7 +54,7 @@ class RoutingSoftmax(nn.Module):
         c_t = torch.exp(b_t - b_t_max)  # [N, t_1, H_1, W_1]
         c_t_pad = self.padding(c_t)
         sum_c_t = F.conv2d(c_t_pad, one_kernel, stride=1, padding=0)
-        r_t = c_t / sum_c_t  # [N, t_1, H_1, W_1]
+        r_t = c_t / (sum_c_t + 1e-9)  # [N, t_1, H_1, W_1]
         return r_t
 
 
