@@ -11,14 +11,17 @@ from lib.torch.common import to_float_tensor, show_landmarks_batch, maybe_cuda
 
 
 def _squash(p: torch.Tensor):
-    p_norm_sq = torch.sum(p ** 2, dim=2, keepdim=True)
+    p_sqr = p ** 2
+    p_norm_sq = torch.sum(p_sqr, dim=1, keepdim=True)
     p_norm = torch.sqrt(p_norm_sq + 1e-9)
-    v = p_norm_sq / (1. + p_norm_sq) * p / p_norm
+    v = p_norm_sq * p / ((1. + p_norm_sq) * p_norm)
     return v
 
 
-def _compute_vector_length(x):
-    return torch.sqrt(torch.sum(x * x, dim=1, keepdim=True) + 1e-9)
+def _compute_vector_length(p: torch.Tensor):
+    p_sqr = p ** 2
+    p_sum_sq = torch.sum(p_sqr, dim=1, keepdim=True)
+    return torch.sqrt(p_sum_sq + 1e-9)
 
 
 class RoutingSoftmax(nn.Module):
@@ -32,7 +35,7 @@ class RoutingSoftmax(nn.Module):
             self.padding = nn.ZeroPad2d(kernel_size // 2)
 
         self.maxpool = nn.MaxPool2d(kernel_size=kernel_size, stride=1, padding=0)
-        self.one_kernel = maybe_cuda(torch.ones([1, t, kernel_size, kernel_size]))
+        self.one_kernel = torch.ones([1, t, kernel_size, kernel_size])
 
         self.add_module('padding', self.padding)
         self.add_module('maxpool', self.maxpool)
@@ -42,10 +45,15 @@ class RoutingSoftmax(nn.Module):
         b_t_pad = self.padding(b_t)
         b_t_max = self.maxpool(b_t_pad)
 
+        if b_t.device.type == 'cuda':
+            one_kernel = maybe_cuda(self.one_kernel)
+        else:
+            one_kernel = self.one_kernel
+
         b_t_max, _ = torch.max(b_t_max, dim=2, keepdim=True)
         c_t = torch.exp(b_t - b_t_max)  # [N, t_1, H_1, W_1]
         c_t_pad = self.padding(c_t)
-        sum_c_t = F.conv2d(c_t_pad, self.one_kernel, stride=1, padding=0)
+        sum_c_t = F.conv2d(c_t_pad, one_kernel, stride=1, padding=0)
         r_t = c_t / sum_c_t  # [N, t_1, H_1, W_1]
         return r_t
 
@@ -81,30 +89,41 @@ class CapsuleLayer(nn.Module):
         self.add_module('routing_softmax', self.routing_softmax)
 
     def forward(self, x: torch.autograd.Variable):
-        # X is [N, num_capsules, in_capsule_dims, H, W]
+        """
 
-        t_1, z_1 = self.num_capsules, self.out_capsule_dims
+        :param x: [N, t_in, z_in, H, W]
+        :return: Tensor of [N, t_out, z_out, H, W], where t is number of capsules, z is capsule dimension
+        """
+
+        t_out, z_out = self.num_capsules, self.out_capsule_dims
 
         N = x.size(0)
-        t_0 = x.size(1)
-        z_0 = x.size(2)
-        H_0 = x.size(3)
-        W_0 = x.size(4)
+        t_in = x.size(1)
+        z_in = x.size(2)
+        H_in = x.size(3)
+        W_in = x.size(4)
 
-        u_t_list = [torch.squeeze(u_t, 1) for u_t in torch.split(x, 1, dim=1)]  # Splits into t_0 chunks
+        u_t_list = [torch.squeeze(u_t, dim=1) for u_t in torch.split(x, 1, dim=1)]  # Splits into t_in chunks
         u_hat_t_list = []
+
         for u_t in u_t_list:
             # u_t: [N, z_0, H_0, W_0]
             u_hat_t = self.convOp(u_t)
+            assert u_hat_t.size(1) == z_out * t_out
             # print(self.mode, u_t.size(), u_hat_t.size())
 
             H_1 = u_hat_t.size(2)
             W_1 = u_hat_t.size(3)
-            u_hat_t = u_hat_t.view([N, t_1, z_1, H_1, W_1])
+
+            # u_hat_t: [N, t_out, z_out, H_1, W_1]
+            u_hat_t = u_hat_t.view([N, t_out, z_out, H_1, W_1])
             u_hat_t_list.append(u_hat_t)
 
-        b = maybe_cuda(torch.zeros([N, t_1, t_0, H_1, W_1]))
-        b_t_list = [torch.squeeze(b_t, dim=2) for b_t in torch.split(b, 1, dim=2)]  # Splits into t_0 chunks
+        b = torch.zeros([N, t_out, t_in, H_1, W_1])
+        if x.device.type == 'cuda':
+            b = maybe_cuda(b)
+
+        b_t_list = [torch.squeeze(b_t, dim=2) for b_t in torch.split(b, 1, dim=2)]  # Splits into t_in chunks
         u_hat_t_list_sg = [u_hat_t.detach() for u_hat_t in u_hat_t_list]
 
         for d in range(self.routing):
@@ -117,10 +136,7 @@ class CapsuleLayer(nn.Module):
             for b_t, u_hat_t in zip(b_t_list, u_hat_t_list_):
                 # routing softmax
                 r_t = self.routing_softmax(b_t)
-                r_t = torch.unsqueeze(r_t, dim=2)  # [N, 1, t_1, H_1, W_1]
-
-                # print('r_t', r_t.size())
-                # print('u_hat_t', u_hat_t.size())
+                r_t = torch.unsqueeze(r_t, dim=2)  # [N, t_1, 1, H_1, W_1]
                 r_t_mul_u_hat_t_list.append(r_t * u_hat_t)  # [N, z_1, t_1, H_1, W_1]
 
             # p = tf.add_n(r_t_mul_u_hat_t_list)  # [N, z_1, t_1, H_1, W_1]
@@ -140,7 +156,9 @@ class CapsuleLayer(nn.Module):
                     # print('u_hat_t', u_hat_t.size())
                     # print('v', v.size())
 
-                    b_t_list_.append(b_t + torch.sum(u_hat_t * v, dim=2, keepdim=False))
+                    ss = u_hat_t * v
+                    sss = torch.sum(ss, dim=2, keepdim=False)
+                    b_t_list_.append(b_t + sss)
                 b_t_list = b_t_list_
 
         return v
@@ -302,12 +320,17 @@ class SyntheticShapes(Dataset):
 
 if __name__ == "__main__":
 
+    use_cuda = False
+
     trainloader = DataLoader(SyntheticShapes(512), batch_size=3, pin_memory=True)
     test_x, test_y = next(iter(trainloader))
 
     show_landmarks_batch((test_x, test_y))
 
-    model = SegCaps(num_classes=1, input_channels=3).cuda()
+    model = SegCaps(num_classes=1, input_channels=3)
+    if use_cuda:
+        model = model.cuda()
+
     criterion = SegCapsLoss()
 
     optim = torch.optim.SGD(model.parameters(), lr=0.001)
@@ -315,14 +338,16 @@ if __name__ == "__main__":
     for epoch in range(10):
         model.train()
         for i, (x, y) in enumerate(trainloader):
-            x, y = x.cuda(), y.cuda()
+
+            if use_cuda:
+                x, y = x.cuda(), y.cuda()
 
             # zero the parameter gradients
             optim.zero_grad()
 
             # forward + backward + optimize
             outputs = model(x)
-            loss = criterion(outputs, (y,x))
+            loss = criterion(outputs, (y, x))
 
             bs = x.size(0)
             (bs * loss).backward()
