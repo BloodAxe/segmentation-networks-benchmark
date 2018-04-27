@@ -22,7 +22,7 @@ from lib.torch.common import to_float_tensor, show_landmarks_batch
 from lib.torch.factorized_unet11 import FactorizedUNet11
 from lib.torch.gcn import GCN
 from lib.torch.psp_net import PSPNet
-from lib.torch.seg_net import SegCaps
+from lib.torch.seg_net import SegCaps, SegCapsLoss
 from lib.torch.tiramisu import FCDenseNet67
 from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss, JaccardScore
 from lib.torch.unet import UNet, FactorizedUNet
@@ -186,6 +186,9 @@ def get_loss(loss):
     if loss == 'nlll2d':
         return torch.nn.NLLLoss2d(), []
 
+    if loss == 'caps_loss':
+        return SegCapsLoss(), [JaccardScore()]
+
     raise ValueError(loss)
 
 
@@ -232,23 +235,6 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def validate(model: torch.nn.Module, criterion, metrics, valid_loader):
-    model.eval()
-    losses = []
-
-    metrics_scores = [[]] * len(metrics)
-
-    for inputs, targets in valid_loader:
-        inputs, targets = inputs.cuda(), targets.cuda()
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
-        losses.append(loss.data[0])
-
-        for metric_index, metric in enumerate(metrics):
-            score = metric(outputs, targets)
-            metrics_scores[metric_index].append(score.data[0])
-
-    return losses, metrics_scores
 
 
 def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rate: float, epochs: int, dataset_name: str, dataset_dir: str, experiment_dir: str,
@@ -259,8 +245,8 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
     print('Train set size', len(trainset))
     print('Valid set size', len(validset))
 
-    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=workers)
-    validloader = DataLoader(validset, batch_size=1, shuffle=False, pin_memory=True)
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=workers)
+    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False)
 
     show_landmarks_batch(next(trainloader.__iter__()))
     show_landmarks_batch(next(validloader.__iter__()))
@@ -316,7 +302,10 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
 
                 # forward + backward + optimize
                 outputs = model(x)
-                loss = criterion(outputs, y)
+                if model_name == 'seg_caps':
+                    loss = criterion(outputs, (y,x)) # For segcaps we need both x and y to compute reconstruction loss term
+                else:
+                    loss = criterion(outputs, y)
 
                 bs = x.size(0)
                 (bs * loss).backward()
@@ -325,7 +314,11 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
 
                 # Compute metrics
                 for metric_index, metric in enumerate(metrics):
-                    score = metric(outputs, y)
+                    if model_name == 'seg_caps':
+                        score = metric(outputs[0], y) # We interested in segmentation output for computing metric
+                    else:
+                        score = metric(outputs, y)
+
                     trn_metric_scores[metric_index].append(score.data.item())
 
                 trn_losses.append(loss.data.item())
@@ -334,7 +327,26 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 mean_loss = np.mean(trn_losses[-report_each:])
                 tq.set_postfix(loss='{:.3f}'.format(mean_loss))
 
-        val_losses, val_metric_scores = validate(model, criterion, metrics, validloader)
+        # Run validation
+        val_metric_scores = [[]] * len(metrics)
+        val_losses = []
+        for x, y in validloader:
+            x, y = x.cuda(), y.cuda()
+            outputs = model(x)
+            if model_name == 'seg_caps':
+                loss = criterion(outputs, (y, x))
+            else:
+                loss = criterion(outputs, y)
+
+            val_losses.append(loss.data.item())
+
+            for metric_index, metric in enumerate(metrics):
+                if model_name == 'seg_caps':
+                    score = metric(outputs[0], y)  # We interested in segmentation output for computing metric
+                else:
+                    score = metric(outputs, y)
+                val_metric_scores[metric_index].append(score.data.item())
+
         val_loss = np.mean(val_losses)
         trn_loss = np.mean(trn_losses)
 
