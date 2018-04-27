@@ -12,7 +12,7 @@ from lib.torch.common import to_float_tensor, show_landmarks_batch, maybe_cuda
 
 def _squash(p: torch.Tensor):
     p_sqr = p ** 2
-    p_norm_sq = torch.sum(p_sqr, dim=1, keepdim=True)
+    p_norm_sq = torch.sum(p_sqr, dim=2, keepdim=True)
     p_norm = torch.sqrt(p_norm_sq + 1e-9)
     v = p_norm_sq * p / ((1. + p_norm_sq) * p_norm)
     return v
@@ -35,7 +35,7 @@ class RoutingSoftmax(nn.Module):
             self.padding = nn.ZeroPad2d(kernel_size // 2)
 
         self.maxpool = nn.MaxPool2d(kernel_size=kernel_size, stride=1, padding=0)
-        self.one_kernel = torch.ones([1, t, kernel_size, kernel_size])
+        self.one_kernel = maybe_cuda(torch.ones([1, t, kernel_size, kernel_size]))
 
         self.add_module('padding', self.padding)
         self.add_module('maxpool', self.maxpool)
@@ -45,15 +45,15 @@ class RoutingSoftmax(nn.Module):
         b_t_pad = self.padding(b_t)
         b_t_max = self.maxpool(b_t_pad)
 
-        if b_t.device.type == 'cuda':
-            one_kernel = maybe_cuda(self.one_kernel)
-        else:
-            one_kernel = self.one_kernel
+        # if b_t.device.type == 'cuda':
+        #     one_kernel = maybe_cuda(self.one_kernel)
+        # else:
+        #     one_kernel = self.one_kernel
 
         b_t_max, _ = torch.max(b_t_max, dim=1, keepdim=True)
         c_t = torch.exp(b_t - b_t_max)  # [N, t_1, H_1, W_1]
         c_t_pad = self.padding(c_t)
-        sum_c_t = F.conv2d(c_t_pad, one_kernel, stride=1, padding=0)
+        sum_c_t = F.conv2d(c_t_pad, self.one_kernel, stride=1, padding=0)
         r_t = c_t / (sum_c_t + 1e-9)  # [N, t_1, H_1, W_1]
         return r_t
 
@@ -136,25 +136,22 @@ class CapsuleLayer(nn.Module):
             for b_t, u_hat_t in zip(b_t_list, u_hat_t_list_):
                 # routing softmax
                 r_t = self.routing_softmax(b_t)
-                r_t = torch.unsqueeze(r_t, dim=2)  # [N, t_1, 1, H_1, W_1]
-                r_t_mul_u_hat_t_list.append(r_t * u_hat_t)  # [N, z_1, t_1, H_1, W_1]
+                r_t = torch.unsqueeze(r_t, dim=2)           # [N, t_out, 1,     H_1, W_1]
+                r_t_mul_u_hat_t_list.append(r_t * u_hat_t)  # [N, t_out, z_out, H_1, W_1]
 
-            # p = tf.add_n(r_t_mul_u_hat_t_list)  # [N, z_1, t_1, H_1, W_1]
-            p = torch.zeros_like(r_t_mul_u_hat_t_list[0])
-            for x in r_t_mul_u_hat_t_list:
-                p += x
+            # p = tf.add_n(r_t_mul_u_hat_t_list)  #
+            p = torch.zeros_like(r_t_mul_u_hat_t_list[0])   # [N, t_out, z_out, H_1, W_1]
+            for r_t in r_t_mul_u_hat_t_list:
+                p += r_t
 
-            v = _squash(p)
+            v = _squash(p)                                  # [N, t_out, z_out, H_1, W_1]
 
             if d < self.routing - 1:
                 b_t_list_ = []
                 for b_t, u_hat_t in zip(b_t_list, u_hat_t_list_):
-                    # b_t     : [N, t_1, H_1, W_1]
-                    # u_hat_t : [N, z_1, t_1, H_1, W_1]
-                    # v       : [N, z_1, t_1, H_1, W_1]
-                    # print('b_t', b_t.size())
-                    # print('u_hat_t', u_hat_t.size())
-                    # print('v', v.size())
+                    # b_t     : [N, t_out, H_1, W_1]
+                    # u_hat_t : [N, t_out, z_out, H_1, W_1]
+                    # v       : [N, t_out, z_out, H_1, W_1]
 
                     ss = u_hat_t * v
                     sss = torch.sum(ss, dim=2, keepdim=False)
@@ -198,6 +195,8 @@ class SegCaps(nn.Module):
             nn.Conv2d(64, 128, 1),
             nn.Conv2d(128, self.input_channels, 1))
 
+        self.final_activation = nn.PReLU()
+
     def forward(self, x):
         x = self.firstconv(x)
 
@@ -234,6 +233,7 @@ class SegCaps(nn.Module):
 
         # 1. compute length of vector
         v_lens = _compute_vector_length(x)
+        v_lens = self.final_activation(v_lens)
 
         # 2. Get masked reconstruction
         recons = self.reconstruction(x)
@@ -244,29 +244,32 @@ class SegCaps(nn.Module):
         return v_lens, recons
 
 
-class SegCapsLoss:
+class SegCapsLoss(nn.Module):
     """
     Loss defined as class_loss + reconstruction_loss
     """
 
     def __init__(self, reconstruction_weight=0.0005):
+        super(SegCapsLoss, self).__init__()
         self.reconstruction_weight = reconstruction_weight
+        self.segmentation_loss = nn.BCELoss()
+        self.reconstruction_loss = nn.MSELoss()
 
-    def _reconstruction_loss(self, outputs, targets):
-        return F.mse_loss(outputs, targets)
+    # def _reconstruction_loss(self, outputs, targets):
+    #     return F.mse_loss(outputs, targets)
+    #
+    # def _class_loss(self, outputs, targets):
+    #     zero_input = torch.zeros_like(outputs)
+    #     a = torch.max(zero_input, 0.9 - outputs)
+    #     b = torch.max(zero_input, outputs - 0.1)
+    #     x = targets * (a ** 2) + 0.5 * (1 - targets) * (b ** 2)
+    #     return x.mean()
 
-    def _class_loss(self, outputs, targets):
-        zero_input = torch.zeros_like(outputs)
-        a = torch.max(zero_input, 0.9 - outputs)
-        b = torch.max(zero_input, outputs - 0.1)
-        x = targets * (a ** 2) + 0.5 * (1 - targets) * (b ** 2)
-        return x.mean()
-
-    def __call__(self, outputs, targets):
-        v_lens, recons = outputs
-        v_lens_true, recons_true = targets
-        loss1 = self._class_loss(v_lens, v_lens_true)
-        loss2 = self._reconstruction_loss(recons, recons_true) * self.reconstruction_weight
+    def forward(self, output, target):
+        v_lens, recons = output
+        v_lens_true, recons_true = target
+        loss1 = self.segmentation_loss(v_lens, v_lens_true)
+        loss2 = self.reconstruction_loss(recons, recons_true) * self.reconstruction_weight
         return loss1 + loss2
 
 
@@ -322,7 +325,7 @@ if __name__ == "__main__":
 
     use_cuda = True
 
-    trainloader = DataLoader(SyntheticShapes(224), batch_size=4, pin_memory=True)
+    trainloader = DataLoader(SyntheticShapes(224), batch_size=16, pin_memory=True)
     test_x, test_y = next(iter(trainloader))
 
     show_landmarks_batch((test_x, test_y))
