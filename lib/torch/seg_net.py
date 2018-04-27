@@ -320,9 +320,9 @@ class SyntheticShapes(Dataset):
 
 if __name__ == "__main__":
 
-    use_cuda = False
+    use_cuda = True
 
-    trainloader = DataLoader(SyntheticShapes(512), batch_size=3, pin_memory=True)
+    trainloader = DataLoader(SyntheticShapes(224), batch_size=4, pin_memory=True)
     test_x, test_y = next(iter(trainloader))
 
     show_landmarks_batch((test_x, test_y))
@@ -330,10 +330,12 @@ if __name__ == "__main__":
     model = SegCaps(num_classes=1, input_channels=3)
     if use_cuda:
         model = model.cuda()
+        test_x, test_y = test_x.cuda(), test_y.cuda()
 
     criterion = SegCapsLoss()
 
-    optim = torch.optim.SGD(model.parameters(), lr=0.001)
+    # optim = torch.optim.SGD(model.parameters(), lr=0.001)
+    optim = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     for epoch in range(10):
         model.train()
@@ -355,6 +357,7 @@ if __name__ == "__main__":
             optim.step()
             print(epoch, i, loss)
 
-        model.test()
+        model.eval()
         y, rec = model(test_x)
-        show_landmarks_batch((rec, y))
+        show_landmarks_batch((test_x.data.cpu(), rec.data.cpu()))
+        show_landmarks_batch((test_y.data.cpu(), y.data.cpu()))
