@@ -302,7 +302,7 @@ def gen_random_image(size):
                 img[i, j, 1] = random.randint(0, 255)
                 img[i, j, 2] = random.randint(0, 255)
 
-    return img, mask
+    return img, (mask > 0).astype(np.uint8)
 
 
 class SyntheticShapes(Dataset):
