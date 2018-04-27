@@ -331,6 +331,7 @@ if __name__ == "__main__":
     show_landmarks_batch((test_x, test_y))
 
     model = SegCaps(num_classes=1, input_channels=3)
+    print('Model parameters', count_parameters(model))
     if use_cuda:
         model = model.cuda()
         test_x, test_y = test_x.cuda(), test_y.cuda()

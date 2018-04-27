@@ -27,6 +27,8 @@ cuda_is_available = torch.cuda.is_available()
 def maybe_cuda(x):
     return x.cuda() if cuda_is_available else x
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def to_float_tensor(img: np.ndarray):
     # .copy() because RuntimeError: some of the strides of a given numpy array are negative.
