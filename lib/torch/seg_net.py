@@ -259,7 +259,7 @@ class SegCapsLoss:
         zero_input = torch.zeros_like(outputs)
         a = torch.max(zero_input, 0.9 - outputs)
         b = torch.max(zero_input, outputs - 0.1)
-        x = 0.5 * targets * (a ** 2) + 0.5 * (1 - targets) * (b ** 2)
+        x = targets * (a ** 2) + 0.5 * (1 - targets) * (b ** 2)
         return x.mean()
 
     def __call__(self, outputs, targets):
