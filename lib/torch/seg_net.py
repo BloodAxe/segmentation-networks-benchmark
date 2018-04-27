@@ -7,7 +7,7 @@ from torch.nn import functional as F
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 
-from lib.torch.common import to_float_tensor, show_landmarks_batch, maybe_cuda
+from lib.torch.common import to_float_tensor, show_landmarks_batch, maybe_cuda, count_parameters
 
 
 def _squash(p: torch.Tensor):

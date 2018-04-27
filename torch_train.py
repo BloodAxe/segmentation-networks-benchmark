@@ -18,7 +18,7 @@ import argparse
 import pandas as pd
 
 from lib.torch.ImageMaskDataset import ImageMaskDataset
-from lib.torch.common import to_float_tensor, show_landmarks_batch
+from lib.torch.common import to_float_tensor, show_landmarks_batch, count_parameters
 from lib.torch.factorized_unet11 import FactorizedUNet11
 from lib.torch.gcn import GCN
 from lib.torch.psp_net import PSPNet
