@@ -260,8 +260,8 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
 
     pd.DataFrame.from_dict(train_history).to_csv(os.path.join(experiment_dir, experiment + '.csv'),
                                                  index=False,
-                                                 mode='w' if resume is None else 'a',
-                                                 header=resume is False)
+                                                 mode='a' if resume else 'w',
+                                                 header=not resume)
 
 
 def main():
