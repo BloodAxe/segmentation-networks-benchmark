@@ -7,20 +7,19 @@ from torch.nn import functional as F
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 
+from lib.augmentations import ToTensors
 from lib.torch.common import show_landmarks_batch, maybe_cuda, count_parameters
 
 
 def _squash(p: torch.Tensor):
-    p_sqr = p ** 2
-    p_norm_sq = torch.sum(p_sqr, dim=2, keepdim=True)
+    p_norm_sq = (p ** 2).sum(dim=2, keepdim=True)
     p_norm = torch.sqrt(p_norm_sq + 1e-9)
     v = p_norm_sq * p / ((1. + p_norm_sq) * p_norm)
     return v
 
 
 def _compute_vector_length(p: torch.Tensor):
-    p_sqr = p ** 2
-    p_sum_sq = torch.sum(p_sqr, dim=1, keepdim=True)
+    p_sum_sq = (p ** 2).sum(dim=1, keepdim=True)
     return torch.sqrt(p_sum_sq + 1e-9)
 
 
@@ -259,34 +258,38 @@ class SegCaps(nn.Module):
         return v_lens, recons
 
 
-class SegCapsLoss(nn.Module):
+class SegCapsLoss:
     """
     Loss defined as class_loss + reconstruction_loss
     """
 
     def __init__(self, reconstruction_weight=0.0005):
-        super(SegCapsLoss, self).__init__()
         self.reconstruction_weight = reconstruction_weight
-        self.segmentation_loss = nn.BCELoss()
-        self.reconstruction_loss = nn.MSELoss()
-        self.add_module('segmentation_loss', self.segmentation_loss)
-        self.add_module('reconstruction_loss', self.reconstruction_loss)
+        self.mse_loss = nn.MSELoss()
 
-    # def _reconstruction_loss(self, outputs, targets):
-    #     return F.mse_loss(outputs, targets)
-    #
-    # def _class_loss(self, outputs, targets):
-    #     zero_input = torch.zeros_like(outputs)
-    #     a = torch.max(zero_input, 0.9 - outputs)
-    #     b = torch.max(zero_input, outputs - 0.1)
-    #     x = targets * (a ** 2) + 0.5 * (1 - targets) * (b ** 2)
-    #     return x.mean()
+    def margin_loss(self, x, labels):
+        batch_size = x.size(0)
 
-    def forward(self, output, target):
+        # v_c = torch.sqrt((x ** 2).sum(dim=1, keepdim=True))
+
+        left = F.relu(0.9 - x)
+        right = F.relu(x - 0.1)
+
+        loss = labels * left + 0.5 * (1.0 - labels) * right
+        loss = loss.sum(dim=1).mean()
+
+        return loss
+
+    def reconstruction_loss(self, y_pred, y_true):
+        loss = self.mse_loss(y_pred, y_true)
+        return loss
+
+
+    def __call__(self, output, target):
         v_lens, recons = output
         v_lens_true, recons_true = target
-        loss1 = self.segmentation_loss(v_lens, v_lens_true)
-        loss2 = self.reconstruction_loss(recons, recons_true) * self.reconstruction_weight
+        loss1 = self.margin_loss(v_lens, v_lens_true.detach())
+        loss2 = self.reconstruction_loss(recons, recons_true.detach()) * self.reconstruction_weight
         return loss1 + loss2
 
 
@@ -329,10 +332,11 @@ class SyntheticShapes(Dataset):
 
     def __init__(self, size):
         self.size = size
+        self.transform = ToTensors()
 
     def __getitem__(self, index):
         img, mask = gen_random_image(self.size)
-        return to_float_tensor(img), to_float_tensor(mask)
+        return self.transform(img, mask)
 
     def __len__(self):
         return 1024
@@ -342,7 +346,7 @@ if __name__ == "__main__":
 
     use_cuda = True
 
-    trainloader = DataLoader(SyntheticShapes(224), batch_size=16, pin_memory=True)
+    trainloader = DataLoader(SyntheticShapes(224), batch_size=1, pin_memory=False)
     test_x, test_y = next(iter(trainloader))
 
     show_landmarks_batch((test_x, test_y))
