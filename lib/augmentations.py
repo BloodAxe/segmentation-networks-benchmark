@@ -273,9 +273,9 @@ class CenterCrop:
         y2 = y1 + self.height
         x1 = dx
         x2 = x1 + self.width
-        img = img[y1:y2, x1:x2, :]
+        img = img[y1:y2, x1:x2, :].copy()
         if mask is not None:
-            mask = mask[y1:y2, x1:x2, :]
+            mask = mask[y1:y2, x1:x2, :].copy()
 
         return img, mask
 
@@ -334,12 +334,12 @@ class RandomCrop(object):
 
         i, j, h, w = self.get_params(x, self.size)
 
-        x = x[i:i + h, j:j + w]
+        x = x[i:i + h, j:j + w].copy()
 
         if mask is not None:
             if self.padding > 0:
                 mask = np.pad(mask, self.padding, 'constant')
-            mask = mask[i:i + h, j:j + w]
+            mask = mask[i:i + h, j:j + w].copy()
 
         return x, mask
 
