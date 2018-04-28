@@ -263,7 +263,7 @@ class SegCapsLoss:
     Loss defined as class_loss + reconstruction_loss
     """
 
-    def __init__(self, reconstruction_weight=0.0005):
+    def __init__(self, reconstruction_weight=0.00005):
         self.reconstruction_weight = reconstruction_weight
         self.mse_loss = nn.MSELoss()
 
