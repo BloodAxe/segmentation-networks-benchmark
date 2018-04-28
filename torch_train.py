@@ -1,154 +1,42 @@
+import argparse
 import sys
-import matplotlib.pyplot as plt
+
 import numpy as np
+import os.path
+import pandas as pd
 import torch
 from torch.backends import cudnn
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.sampler import BatchSampler, RandomSampler
-from torchvision.datasets import CocoDetection
-from torchvision import transforms as trans
-from torchvision.utils import make_grid
-
-from lib.tiles import ImageSlicer
-from lib.torch import albunet, linknet, unet11, unet16
-
-import cv2
-import os.path
-import argparse
-import pandas as pd
-
-from lib.torch.ImageMaskDataset import ImageMaskDataset
-from lib.torch.common import to_float_tensor, show_landmarks_batch, count_parameters
-from lib.torch.factorized_unet11 import FactorizedUNet11
-from lib.torch.gcn import GCN
-from lib.torch.psp_net import PSPNet
-from lib.torch.seg_net import SegCaps, SegCapsLoss
-from lib.torch.tiramisu import FCDenseNet67
-from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss, JaccardScore
-from lib.torch.unet import UNet, FactorizedUNet
-from sklearn.model_selection import train_test_split
-from lib.torch import common as T
-from lib import augmentations as aug
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from plot import plot_train_history
+from lib.torch.common import show_landmarks_batch, count_parameters
+from lib.torch.datasets.Inria import INRIA
+from lib.torch.datasets.coco import COCO
+from lib.torch.datasets.dsb2018 import DSB2018
+from lib.torch.models import linknet, albunet, unet16, unet11
+from lib.torch.models.factorized_unet11 import FactorizedUNet11
+from lib.torch.models.gcn import GCN
+from lib.torch.models.psp_net import PSPNet
+from lib.torch.models.seg_net import SegCaps, SegCapsLoss
+from lib.torch.models.tiramisu import FCDenseNet67
+from lib.torch.models.unet import UNet, FactorizedUNet
+from lib.torch.models.zf_unet import ZF_UNET
+from lib.torch.torch_losses import DiceLoss, BCEWithLogitsLossAndJaccard, JaccardLoss, JaccardScore
 
 tqdm.monitor_interval = 0  # Workaround for https://github.com/tqdm/tqdm/issues/481
-
-
-def find_in_dir(dirname):
-    return [os.path.join(dirname, fname) for fname in os.listdir(dirname)]
-
-
-def read_rgb(fname):
-    x = cv2.imread(fname, cv2.IMREAD_COLOR)
-    return x
-
-
-def read_gray(fname):
-    x = np.expand_dims(cv2.imread(fname, cv2.IMREAD_GRAYSCALE), axis=-1)
-    return x
-
-
-def normalize_image(x: np.ndarray):
-    x = x.astype(np.float32, copy=True)
-    x /= 127.5
-    x -= 1.
-    return x
-
-
-class SimpleDataset(Dataset):
-    def __init__(self, images, masks):
-        self.images = [to_float_tensor(i) for i in images]
-        self.masks = [to_float_tensor(m) for m in masks]
-
-    def __getitem__(self, index):
-        return self.images[index], self.masks[index]
-
-    def __len__(self):
-        return len(self.images)
 
 
 def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
     dataset_name = dataset_name.lower()
 
     if dataset_name == 'coco':
-        train_transform = trans.Compose([
-            trans.RandomCrop(patch_size),
-            trans.RandomHorizontalFlip(),
-            trans.RandomVerticalFlip(),
-            trans.RandomGrayscale(),
-            trans.ToTensor(),
-        ])
-
-        test_transform = trans.Compose([
-            trans.CenterCrop(patch_size),
-            trans.transforms.ToTensor(),
-        ])
-
-        num_classes = 182
-        return CocoDetection(root=os.path.join(dataset_dir, 'train2014'),
-                             annFile=os.path.join(dataset_dir, 'annotations_trainval2014', 'instances_train2014.json'),
-                             transform=train_transform), \
-               CocoDetection(root=os.path.join(dataset_dir, 'val2014'),
-                             annFile=os.path.join(dataset_dir, 'annotations_trainval2014', 'instances_val2014.json'),
-                             transform=test_transform), \
-               num_classes
+        return COCO(dataset_dir, grayscale, patch_size)
 
     if dataset_name == 'inria':
-        x = find_in_dir(os.path.join(dataset_dir, 'images'))
-        y = find_in_dir(os.path.join(dataset_dir, 'gt'))
-
-        x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.1)
-
-        train_transform = aug.Sequential([
-            # aug.RandomCrop(224),
-            aug.VerticalFlip(),
-            aug.HorizontalFlip(),
-            # aug.ImageOnly(trans.RandomGrayscale()),
-            aug.ImageOnly(aug.RandomBrightness()),
-            aug.ImageOnly(aug.RandomContrast()),
-            aug.ImageOnly(aug.ScaleImage()),
-            aug.MaskOnly(aug.MakeBinary()),
-            aug.ToTensors()
-        ])
-
-        test_transform = aug.Sequential([
-            # aug.CenterCrop(patch_size, patch_size),
-            aug.ImageOnly(aug.ScaleImage()),
-            aug.MaskOnly(aug.MakeBinary()),
-            aug.ToTensors()
-        ])
-
-        train = ImageMaskDataset(x_train, y_train, image_loader=read_rgb, target_loader=read_gray, transform=train_transform, load_in_ram=False)
-        test = ImageMaskDataset(x_test, y_test, image_loader=read_rgb, target_loader=read_gray, transform=test_transform, load_in_ram=False)
-        num_classes = 1
-        return train, test, num_classes
+        return INRIA(dataset_dir, grayscale, patch_size)
 
     if dataset_name == 'dsb2018':
-        images = find_in_dir(os.path.join(dataset_dir, 'images'))
-        images = [cv2.imread(fname, cv2.IMREAD_GRAYSCALE if grayscale else cv2.IMREAD_COLOR) for fname in images]
-        images = [normalize_image(i) for i in images]
-        if grayscale:
-            images = [np.expand_dims(m, axis=-1) for m in images]
-
-        masks = find_in_dir(os.path.join(dataset_dir, 'masks'))
-        masks = [cv2.imread(fname, cv2.IMREAD_GRAYSCALE) for fname in masks]
-        masks = [np.expand_dims(m, axis=-1) for m in masks]
-        masks = [np.float32(m > 0) for m in masks]
-
-        patch_images = []
-        patch_masks = []
-        for image, mask in zip(images, masks):
-            slicer = ImageSlicer(image.shape, patch_size, patch_size // 2)
-
-            patch_images.extend(slicer.split(image))
-            patch_masks.extend(slicer.split(mask))
-
-        x_train, x_test, y_train, y_test = train_test_split(patch_images, patch_masks, random_state=1234, test_size=0.2)
-
-        num_classes = 1
-        return SimpleDataset(x_train, y_train), SimpleDataset(x_test, y_test), num_classes
+        return DSB2018(dataset_dir, grayscale, patch_size)
 
     raise ValueError(dataset_name)
 
@@ -210,6 +98,9 @@ def get_model(model_name, num_classes, patch_size):
     if model_name == 'unet16':
         return unet16.UNet16(num_classes=num_classes, pretrained=True)
 
+    if model_name == 'zf_unet':
+        return ZF_UNET(num_classes=num_classes)
+
     if model_name == 'linknet34':
         return linknet.LinkNet34(num_classes=num_classes, pretrained=True)
 
@@ -231,10 +122,6 @@ def get_model(model_name, num_classes, patch_size):
     raise ValueError(model_name)
 
 
-
-
-
-
 def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rate: float, epochs: int, dataset_name: str, dataset_dir: str, experiment_dir: str,
                              experiment: str, grayscale: bool, patch_size: int, batch_size: int, workers: int, resume: bool):
     np.random.seed(42)
@@ -243,8 +130,8 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
     print('Train set size', len(trainset))
     print('Valid set size', len(validset))
 
-    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=workers)
-    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False)
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
+    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True)
 
     show_landmarks_batch(next(trainloader.__iter__()))
     show_landmarks_batch(next(validloader.__iter__()))
@@ -301,7 +188,7 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 # forward + backward + optimize
                 outputs = model(x)
                 if model_name == 'seg_caps':
-                    loss = criterion(outputs, (y,x)) # For segcaps we need both x and y to compute reconstruction loss term
+                    loss = criterion(outputs, (y, x))  # For segcaps we need both x and y to compute reconstruction loss term
                 else:
                     loss = criterion(outputs, y)
 
@@ -313,7 +200,7 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 # Compute metrics
                 for metric_index, metric in enumerate(metrics):
                     if model_name == 'seg_caps':
-                        score = metric(outputs[0], y) # We interested in segmentation output for computing metric
+                        score = metric(outputs[0], y)  # We interested in segmentation output for computing metric
                     else:
                         score = metric(outputs, y)
 
@@ -400,7 +287,7 @@ def main():
     if args.experiment is None:
         args.experiment = 'torch_%s_%s_%d_%s_%s' % (args.dataset, args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
 
-    experiment_dir = os.path.join('experiments', args.experiment)
+    experiment_dir = os.path.join('experiments', args.dataset, args.loss, args.experiment)
     os.makedirs(experiment_dir, exist_ok=True)
     with open(os.path.join(experiment_dir, 'arguments.txt'), 'w') as f:
         f.write(' '.join(sys.argv[1:]))

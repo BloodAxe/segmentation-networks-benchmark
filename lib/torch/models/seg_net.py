@@ -7,7 +7,7 @@ from torch.nn import functional as F
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 
-from lib.torch.common import to_float_tensor, show_landmarks_batch, maybe_cuda, count_parameters
+from lib.torch.common import show_landmarks_batch, maybe_cuda, count_parameters
 
 
 def _squash(p: torch.Tensor):
@@ -174,6 +174,7 @@ class SegCaps(nn.Module):
         self.input_channels = input_channels
 
         self.firstconv = nn.Conv2d(input_channels, 16, 5, padding=2)
+
         self.enc1 = nn.Sequential(CapsuleLayer('conv', input_channels=16, capsule_dims=16, kernel_size=5, stride=2, num_capsules=2, routing=1),
                                   CapsuleLayer('conv', input_channels=16, capsule_dims=16, kernel_size=5, stride=1, num_capsules=4, routing=3))
         self.enc2 = nn.Sequential(CapsuleLayer('conv', input_channels=16, capsule_dims=32, kernel_size=5, stride=2, num_capsules=4, routing=3),
@@ -196,6 +197,20 @@ class SegCaps(nn.Module):
             nn.Conv2d(128, self.input_channels, 1))
 
         self.final_activation = nn.PReLU()
+
+        self.add_module('firstconv', self.firstconv)
+        self.add_module('enc1', self.enc1)
+        self.add_module('enc2', self.enc2)
+        self.add_module('enc3', self.enc3)
+
+        self.add_module('dec31', self.dec31)
+        self.add_module('dec32', self.dec32)
+        self.add_module('dec22', self.dec22)
+        self.add_module('dec11', self.dec11)
+        self.add_module('dec12', self.dec12)
+
+        self.add_module('reconstruction', self.reconstruction)
+        self.add_module('final_activation', self.final_activation)
 
     def forward(self, x):
         x = self.firstconv(x)
@@ -254,6 +269,8 @@ class SegCapsLoss(nn.Module):
         self.reconstruction_weight = reconstruction_weight
         self.segmentation_loss = nn.BCELoss()
         self.reconstruction_loss = nn.MSELoss()
+        self.add_module('segmentation_loss', self.segmentation_loss)
+        self.add_module('reconstruction_loss', self.reconstruction_loss)
 
     # def _reconstruction_loss(self, outputs, targets):
     #     return F.mse_loss(outputs, targets)

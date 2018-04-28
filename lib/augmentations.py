@@ -62,6 +62,27 @@ class MaskOnly:
         return x, self.trans(mask)
 
 
+class RandomGrayscale():
+    def __init__(self, prob=0.5):
+        self.prob = prob
+
+    def __call__(self, img):
+        if random.random() < self.prob:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        return img
+
+
+class RandomInvert:
+    def __init__(self, prob=0.5):
+        self.prob = prob
+
+    def __call__(self, img):
+        if random.random() < self.prob:
+            img = img.max() - img
+        return img
+
+
 class MakeBinary:
     def __call__(self, x):
         dt = x.dtype
@@ -75,9 +96,9 @@ class VerticalFlip:
 
     def __call__(self, img, mask=None):
         if random.random() < self.prob:
-            img = np.flipud(img)
+            img = np.flipud(img).copy()
             if mask is not None:
-                mask = np.flipud(mask)
+                mask = np.flipud(mask).copy()
         return img, mask
 
 
@@ -87,12 +108,10 @@ class HorizontalFlip:
 
     def __call__(self, img, mask=None):
         if random.random() < self.prob:
-            img = np.fliplr(img)
+            img = np.fliplr(img).copy()
             if mask is not None:
-                mask = np.fliplr(mask)
+                mask = np.fliplr(mask).copy()
         return img, mask
-
-
 
 
 class Transpose:
@@ -101,9 +120,9 @@ class Transpose:
 
     def __call__(self, img, mask=None):
         if random.random() < self.prob:
-            img = img.transpose(1, 0, 2)
+            img = img.transpose(1, 0, 2).copy()
             if mask is not None:
-                mask = mask.transpose(1, 0)
+                mask = mask.transpose(1, 0).copy()
         return img, mask
 
 
@@ -114,10 +133,10 @@ class RandomRotate90:
     def __call__(self, img, mask=None):
         if random.random() < self.prob:
             factor = random.randint(0, 4)
-            img = np.rot90(img, factor)
+            img = np.rot90(img, factor).copy()
             if mask is not None:
-                mask = np.rot90(mask, factor)
-        return img.copy(), mask.copy()  # throws error without .copy()
+                mask = np.rot90(mask, factor).copy()
+        return img, mask
 
 
 class Rotate:
@@ -160,10 +179,10 @@ class Shift:
             x2 = x1 + width
 
             img1 = cv2.copyMakeBorder(img, limit + 1, limit + 1, limit + 1, limit + 1, borderType=cv2.BORDER_REFLECT_101)
-            img = img1[y1:y2, x1:x2, :]
+            img = img1[y1:y2, x1:x2, :].copy()
             if mask is not None:
                 msk1 = cv2.copyMakeBorder(mask, limit + 1, limit + 1, limit + 1, limit + 1, borderType=cv2.BORDER_REFLECT_101)
-                mask = msk1[y1:y2, x1:x2, :]
+                mask = msk1[y1:y2, x1:x2, :].copy()
 
         return img, mask
 
@@ -540,7 +559,7 @@ class RandomHueSaturationValue:
         return image
 
 
-class ScaleImage:
+class NormalizeImage:
     """
         x /= 127.5
         x -= 1.
@@ -567,11 +586,16 @@ class ToTensors:
         # .copy() because RuntimeError: some of the strides of a given numpy array are negative.
         #  This is currently not supported, but will be added in future releases.
         # https://discuss.pytorch.org/t/torch-from-numpy-not-support-negative-strides/3663
-        tensor = torch.from_numpy(np.moveaxis(img, -1, 0)).float()
+        tensor = torch.from_numpy(np.moveaxis(img.copy(), -1, 0)).float()
         return tensor
 
-
     def __call__(self, x, mask):
+        if len(x.shape) < 3:
+            x = np.expand_dims(x, axis=-1)
+
+        if len(mask.shape) < 3:
+            mask = np.expand_dims(mask, axis=-1)
+
         return ToTensors.to_float_tensor(x), ToTensors.to_float_tensor(mask)
 
 
@@ -586,33 +610,3 @@ class CLAHE:
         img_yuv[:, :, 0] = clahe.apply(img_yuv[:, :, 0])
         img_output = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
         return img_output
-
-
-def augment(x, mask=None, prob=0.5):
-    return Sequential([
-        OneOrOther(
-            *(OneOf([
-                Distort1(distort_limit=0.05, shift_limit=0.05),
-                Distort2(num_steps=2, distort_limit=0.05)]),
-              ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.10, rotate_limit=45)), prob=prob),
-        RandomFlip(prob=0.5),
-        Transpose(prob=0.5),
-        ImageOnly(RandomContrast(limit=0.2, prob=0.5)),
-        ImageOnly(RandomFilter(limit=0.5, prob=0.2)),
-    ])(x, mask)
-
-
-def augment_a_little(x, mask=None, prob=.5):
-    return Sequential([
-        HorizontalFlip(prob=.5),
-        ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.10, rotate_limit=5, prob=.75)
-    ])(x, mask)
-
-
-def augment_color(x, mask=None, prob=.5):
-    return Sequential([
-        HorizontalFlip(prob=.5),
-        ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.10, rotate_limit=5, prob=.75),
-        ImageOnly(RandomBrightness()),
-        ImageOnly(RandomHueSaturationValue())
-    ])(x, mask)
