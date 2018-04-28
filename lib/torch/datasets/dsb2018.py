@@ -22,14 +22,15 @@ def DSB2018(dataset_dir, grayscale, patch_size):
 
     train_transform = aug.Sequential([
         aug.RandomCrop(patch_size),
-        # aug.ImageOnly(aug.RandomGrayscale(1.0 if grayscale else 0.5)),
+        aug.ImageOnly(aug.RandomGrayscale()),
         # aug.ImageOnly(aug.RandomInvert()),
         aug.ImageOnly(aug.NormalizeImage()),
         # aug.ImageOnly(aug.RandomBrightness()),
         # aug.ImageOnly(aug.RandomContrast()),
-        # aug.VerticalFlip(),
-        # aug.HorizontalFlip(),
-        # aug.ShiftScaleRotate(),
+        aug.RandomRotate90(),
+        aug.VerticalFlip(),
+        aug.HorizontalFlip(),
+        aug.ShiftScaleRotate(),
         aug.MaskOnly(aug.MakeBinary()),
         aug.ToTensors()
     ])
