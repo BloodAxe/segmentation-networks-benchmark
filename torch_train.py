@@ -12,7 +12,7 @@ from tqdm import tqdm
 from lib.torch.common import show_landmarks_batch, count_parameters
 from lib.torch.datasets.Inria import INRIA
 from lib.torch.datasets.coco import COCO
-from lib.torch.datasets.dsb2018 import DSB2018
+from lib.torch.datasets.dsb2018 import DSB2018, DSB2018Sliced
 from lib.torch.models import linknet, albunet, unet16, unet11
 from lib.torch.models.factorized_unet11 import FactorizedUNet11
 from lib.torch.models.gcn import GCN
@@ -36,7 +36,7 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size):
         return INRIA(dataset_dir, grayscale, patch_size)
 
     if dataset_name == 'dsb2018':
-        return DSB2018(dataset_dir, grayscale, patch_size)
+        return DSB2018Sliced(dataset_dir, grayscale, patch_size)
 
     raise ValueError(dataset_name)
 

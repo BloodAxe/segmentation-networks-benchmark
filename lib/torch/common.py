@@ -7,6 +7,8 @@ import torch
 from torch.utils.data import Dataset
 from torchvision.utils import make_grid
 
+from lib.augmentations import ToTensors
+
 cuda_is_available = torch.cuda.is_available()
 
 
@@ -51,6 +53,20 @@ def normalize_image(x: np.ndarray):
     x /= 127.5
     x -= 1.
     return x
+
+
+class RawDataset(Dataset):
+    def __init__(self, images, masks, transform=ToTensors()):
+        self.images = images
+        self.masks = masks
+        self.transform = transform
+
+    def __getitem__(self, index):
+        i, m = self.images[index], self.masks[index]
+        return self.transform(i, m)
+
+    def __len__(self):
+        return len(self.images)
 
 
 class ImageMaskDataset(Dataset):
