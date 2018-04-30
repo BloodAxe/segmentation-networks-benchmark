@@ -180,7 +180,7 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
             tq.set_description('Epoch {}, lr {}'.format(epoch, learning_rate))
 
             for i, (x, y) in enumerate(trainloader, 0):
-                x, y = x.cuda(), y.cuda()
+                x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
 
                 # zero the parameter gradients
                 optim.zero_grad()
@@ -216,7 +216,7 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
         val_metric_scores = [[]] * len(metrics)
         val_losses = []
         for x, y in validloader:
-            x, y = x.cuda(), y.cuda()
+            x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
             outputs = model(x)
             if model_name == 'seg_caps':
                 loss = criterion(outputs, (y, x))
