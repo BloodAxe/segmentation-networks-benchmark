@@ -273,9 +273,9 @@ class CenterCrop:
         y2 = y1 + self.height
         x1 = dx
         x2 = x1 + self.width
-        img = img[y1:y2, x1:x2, :].copy()
+        img = img[y1:y2, x1:x2].copy()
         if mask is not None:
-            mask = mask[y1:y2, x1:x2, :].copy()
+            mask = mask[y1:y2, x1:x2].copy()
 
         return img, mask
 
