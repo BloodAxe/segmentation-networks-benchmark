@@ -213,6 +213,7 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 tq.set_postfix(loss='{:.3f}'.format(mean_loss))
 
         # Run validation
+        model.eval()
         val_metric_scores = [[]] * len(metrics)
         val_losses = []
         for x, y in validloader:
