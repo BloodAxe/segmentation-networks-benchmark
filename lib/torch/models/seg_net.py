@@ -11,17 +11,24 @@ from lib.augmentations import ToTensors
 from lib.torch.common import show_landmarks_batch, maybe_cuda, count_parameters
 
 
-def _squash(p: torch.Tensor):
-    p_norm_sq = (p ** 2).sum(dim=2, keepdim=True)
-    p_norm = torch.sqrt(p_norm_sq + 1e-9)
-    v = p_norm_sq * p / ((1. + p_norm_sq) * p_norm)
-    return v
+def squash(tensor:torch.Tensor, dim=2):
+    assert torch.isnan(tensor).sum()==0
 
+    squared_norm = (tensor ** 2).sum(dim=dim, keepdim=True)
+    scale = squared_norm / (1 + squared_norm)
+    result = scale * tensor / torch.sqrt(squared_norm +1e-9)
+
+    assert torch.isnan(result).sum()==0
+    return result
 
 def _compute_vector_length(p: torch.Tensor):
-    p_sum_sq = (p ** 2).sum(dim=1, keepdim=True)
-    return torch.sqrt(p_sum_sq + 1e-9)
+    assert torch.isnan(p).sum()==0
 
+    p_sum_sq = (p ** 2).sum(dim=1, keepdim=True)
+    result = torch.sqrt(p_sum_sq + 1e-9)
+
+    assert torch.isnan(result).sum()==0
+    return result
 
 class RoutingSoftmax(nn.Module):
     def __init__(self, kernel_size, t):
@@ -29,9 +36,9 @@ class RoutingSoftmax(nn.Module):
         self.kernel_size = kernel_size
 
         if kernel_size % 2 == 0:
-            self.padding = nn.ZeroPad2d((1, 2, 1, 2))
+            self.padding = nn.ReplicationPad2d((1, 2, 1, 2))
         else:
-            self.padding = nn.ZeroPad2d(kernel_size // 2)
+            self.padding = nn.ReplicationPad2d(kernel_size // 2)
 
         self.maxpool = nn.MaxPool2d(kernel_size=kernel_size, stride=1, padding=0)
         self.one_kernel = maybe_cuda(torch.ones([1, t, kernel_size, kernel_size]))
@@ -41,16 +48,13 @@ class RoutingSoftmax(nn.Module):
         # self.register_buffer('one_kernel', self.one_kernel)
 
     def forward(self, b_t):
-        b_t_pad = self.padding(b_t)
-        b_t_max = self.maxpool(b_t_pad)
+        # b_t_pad = self.padding(b_t)
+        # b_t_max = self.maxpool(b_t_pad)
+        # b_t_max, _ = b_t_max.max(dim=1, keepdim=True)
+        assert torch.isnan(b_t).sum()==0
 
-        # if b_t.device.type == 'cuda':
-        #     one_kernel = maybe_cuda(self.one_kernel)
-        # else:
-        #     one_kernel = self.one_kernel
-
-        b_t_max, _ = torch.max(b_t_max, dim=1, keepdim=True)
-        c_t = torch.exp(b_t - b_t_max)  # [N, t_1, H_1, W_1]
+        # c_t = torch.exp(b_t - b_t_max)  # [N, t_1, H_1, W_1]
+        c_t = torch.exp(b_t)  # [N, t_1, H_1, W_1]
         c_t_pad = self.padding(c_t)
         sum_c_t = F.conv2d(c_t_pad, self.one_kernel, stride=1, padding=0)
         r_t = c_t / (sum_c_t + 1e-9)  # [N, t_1, H_1, W_1]
@@ -66,7 +70,7 @@ class CapsuleLayer(nn.Module):
         :param kernel_size: Kernel size of (de)convolution and routing
         :param stride: Stride size of (de)convotluion
         :param num_capsules: The number of capsules
-        :param routing: The number of routing
+        :param routing: The number of routing iterations
         """
         super(CapsuleLayer, self).__init__()
 
@@ -87,13 +91,13 @@ class CapsuleLayer(nn.Module):
         self.add_module('convOp', self.convOp)
         self.add_module('routing_softmax', self.routing_softmax)
 
-    def forward(self, x: torch.autograd.Variable):
+    def forward(self, x: torch.Tensor):
         """
-
         :param x: [N, t_in, z_in, H, W]
         :return: Tensor of [N, t_out, z_out, H, W], where t is number of capsules, z is capsule dimension
         """
 
+        assert torch.isnan(x).sum() == 0
         t_out, z_out = self.num_capsules, self.out_capsule_dims
 
         N = x.size(0)
@@ -143,7 +147,7 @@ class CapsuleLayer(nn.Module):
             for r_t in r_t_mul_u_hat_t_list:
                 p += r_t
 
-            v = _squash(p)                                  # [N, t_out, z_out, H_1, W_1]
+            v = squash(p)                                  # [N, t_out, z_out, H_1, W_1]
 
             if d < self.routing - 1:
                 b_t_list_ = []
@@ -152,9 +156,9 @@ class CapsuleLayer(nn.Module):
                     # u_hat_t : [N, t_out, z_out, H_1, W_1]
                     # v       : [N, t_out, z_out, H_1, W_1]
 
-                    ss = u_hat_t * v
-                    sss = torch.sum(ss, dim=2, keepdim=False)
-                    b_t_list_.append(b_t + sss)
+                    a = u_hat_t * v
+                    a = a.sum(dim=2, keepdim=False)
+                    b_t_list_.append(b_t + a)
                 b_t_list = b_t_list_
 
         return v
@@ -247,7 +251,7 @@ class SegCaps(nn.Module):
 
         # 1. compute length of vector
         v_lens = _compute_vector_length(x)
-        v_lens = self.final_activation(v_lens)
+        # v_lens = self.final_activation(v_lens)
 
         # 2. Get masked reconstruction
         recons = self.reconstruction(x)
@@ -263,33 +267,32 @@ class SegCapsLoss:
     Loss defined as class_loss + reconstruction_loss
     """
 
-    def __init__(self, reconstruction_weight=0.00005):
+    def __init__(self, reconstruction_weight=0.0005):
         self.reconstruction_weight = reconstruction_weight
         self.mse_loss = nn.MSELoss()
 
-    def margin_loss(self, x, labels):
-        batch_size = x.size(0)
-
+    def margin_loss(self, y_pred, y_true):
+        batch_size = y_pred.size(0)
         # v_c = torch.sqrt((x ** 2).sum(dim=1, keepdim=True))
 
-        left = F.relu(0.9 - x)
-        right = F.relu(x - 0.1)
+        left = F.relu(0.9 - y_pred) ** 2
+        right = F.relu(y_pred - 0.1) ** 2
 
-        loss = labels * left + 0.5 * (1.0 - labels) * right
+        loss = y_true * left + 0.5 * (1.0 - y_true) * right
         loss = loss.sum(dim=1).mean()
 
         return loss
 
     def reconstruction_loss(self, y_pred, y_true):
         loss = self.mse_loss(y_pred, y_true)
-        return loss
+        return loss * self.reconstruction_weight
 
 
     def __call__(self, output, target):
         v_lens, recons = output
         v_lens_true, recons_true = target
         loss1 = self.margin_loss(v_lens, v_lens_true.detach())
-        loss2 = self.reconstruction_loss(recons, recons_true.detach()) * self.reconstruction_weight
+        loss2 = self.reconstruction_loss(recons, recons_true.detach())
         return loss1 + loss2
 
 
@@ -349,8 +352,15 @@ if __name__ == "__main__":
     trainloader = DataLoader(SyntheticShapes(224), batch_size=1, pin_memory=False)
     test_x, test_y = next(iter(trainloader))
 
-    show_landmarks_batch((test_x, test_y))
+    # firstconv = nn.Conv2d(3, 16, 5, padding=2).cuda()
+    # firstLayer = CapsuleLayer('conv', input_channels=16, capsule_dims=16, kernel_size=5, stride=2, num_capsules=2, routing=1).cuda()
 
+    # x = firstconv(test_x.cuda())
+    # x = torch.unsqueeze(x, dim=1)  # [N, t=1, z, H, W]
+    # result = firstLayer.forward(x)
+    # print(result)
+
+    # show_landmarks_batch((test_x, test_y))
     model = SegCaps(num_classes=1, input_channels=3)
     print('Model parameters', count_parameters(model))
     if use_cuda:
@@ -360,7 +370,7 @@ if __name__ == "__main__":
     criterion = SegCapsLoss()
 
     # optim = torch.optim.SGD(model.parameters(), lr=0.001)
-    optim = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optim = torch.optim.Adam(model.parameters(), lr=1e-5)
 
     for epoch in range(10):
         model.train()
