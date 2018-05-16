@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torchvision import models
+from torch.nn import functional as F
 
 
 class _DenseUpsamplingConvModule(nn.Module):
@@ -26,6 +27,7 @@ class ResNetDUC(nn.Module):
         super(ResNetDUC, self).__init__()
         resnet = models.resnet152(pretrained=pretrained)
 
+        self.num_classes = num_classes
         self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
         self.layer1 = resnet.layer1
         self.layer2 = resnet.layer2
@@ -56,6 +58,10 @@ class ResNetDUC(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.duc(x)
+
+        if self.num_classes > 1:
+            x = F.log_softmax(x, dim=1)
+
         return x
 
 
@@ -63,9 +69,9 @@ class ResNetDUCHDC(nn.Module):
     # the size of image should be multiple of 8
     def __init__(self, num_classes, pretrained=True):
         super(ResNetDUCHDC, self).__init__()
-        resnet = models.resnet152()
-        if pretrained:
-            resnet.load_state_dict(torch.load(res152_path))
+        resnet = models.resnet152(pretrained=pretrained)
+
+        self.num_classes = num_classes
         self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
         self.layer1 = resnet.layer1
         self.layer2 = resnet.layer2
@@ -96,4 +102,8 @@ class ResNetDUCHDC(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.duc(x)
+
+        if self.num_classes > 1:
+            x = F.log_softmax(x, dim=1)
+
         return x

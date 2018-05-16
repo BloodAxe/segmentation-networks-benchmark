@@ -14,6 +14,7 @@ from lib.torch.datasets.Inria import INRIA
 from lib.torch.datasets.coco import COCO
 from lib.torch.datasets.dsb2018 import DSB2018, DSB2018Sliced
 from lib.torch.models import linknet, albunet, unet16, unet11
+from lib.torch.models.duc_hdc import ResNetDUCHDC, ResNetDUC
 from lib.torch.models.factorized_unet11 import FactorizedUNet11
 from lib.torch.models.gcn import GCN
 from lib.torch.models.psp_net import PSPNet
@@ -119,6 +120,12 @@ def get_model(model_name, num_classes, patch_size):
     if model_name == 'seg_caps':
         return SegCaps(num_classes=num_classes)
 
+    if model_name == 'duc':
+        return ResNetDUC(num_classes=num_classes)
+
+    if model_name == 'duc_dc':
+        return ResNetDUCHDC(num_classes=num_classes)
+
     raise ValueError(model_name)
 
 
@@ -130,11 +137,8 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
     print('Train set size', len(trainset))
     print('Valid set size', len(validset))
 
-    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
-    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True)
-
-    show_landmarks_batch(next(trainloader.__iter__()))
-    show_landmarks_batch(next(validloader.__iter__()))
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True, drop_last=True)
+    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, drop_last=True)
 
     model = get_model(model_name, num_classes=num_classes, patch_size=patch_size)
     model = model.cuda()
@@ -213,6 +217,7 @@ def run_train_session_binary(model_name: str, optimizer: str, loss, learning_rat
                 tq.set_postfix(loss='{:.3f}'.format(mean_loss))
 
         # Run validation
+        torch.cuda.empty_cache()
         model.eval()
         val_metric_scores = [[]] * len(metrics)
         val_losses = []
