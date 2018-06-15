@@ -103,7 +103,4 @@ class ResNetDUCHDC(nn.Module):
         x = self.layer4(x)
         x = self.duc(x)
 
-        if self.num_classes > 1:
-            x = F.log_softmax(x, dim=1)
-
         return x

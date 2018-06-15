@@ -13,6 +13,8 @@ class _GlobalConvModule(nn.Module):
         pad1 = (kernel_size[1] - 1) // 2
         # kernel size had better be odd number so as to avoid alignment error
         super(_GlobalConvModule, self).__init__()
+
+        self.pre_drop = nn.Dropout2d(p=0.1)
         self.conv_l1 = nn.Conv2d(in_dim, out_dim, kernel_size=(kernel_size[0], 1),
                                  padding=(pad0, 0))
         self.conv_l2 = nn.Conv2d(out_dim, out_dim, kernel_size=(1, kernel_size[1]),
@@ -23,6 +25,7 @@ class _GlobalConvModule(nn.Module):
                                  padding=(pad0, 0))
 
     def forward(self, x):
+        x = self.pre_drop(x)
         x_l = self.conv_l1(x)
         x_l = self.conv_l2(x_l)
         x_r = self.conv_r1(x)
@@ -50,7 +53,7 @@ def initialize_weights(*models):
     for model in models:
         for module in model.modules():
             if isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear):
-                nn.init.kaiming_normal(module.weight)
+                nn.init.kaiming_normal_(module.weight)
                 if module.bias is not None:
                     module.bias.data.zero_()
             elif isinstance(module, nn.BatchNorm2d):
@@ -58,9 +61,62 @@ def initialize_weights(*models):
                 module.bias.data.zero_()
 
 
-class GCN(nn.Module):
+class GCN34(nn.Module):
     def __init__(self, num_classes, input_size, pretrained=True):
-        super(GCN, self).__init__()
+        super(GCN34, self).__init__()
+        self.input_size = input_size
+        self.num_classes = num_classes
+        resnet = models.resnet34(pretrained)
+
+        self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
+        self.layer1 = nn.Sequential(resnet.maxpool, resnet.layer1)
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        self.layer4 = resnet.layer4
+
+        self.gcm1 = _GlobalConvModule(512, num_classes, (7, 7))
+        self.gcm2 = _GlobalConvModule(256, num_classes, (7, 7))
+        self.gcm3 = _GlobalConvModule(128, num_classes, (7, 7))
+        self.gcm4 = _GlobalConvModule(64, num_classes, (7, 7))
+
+        self.brm1 = _BoundaryRefineModule(num_classes)
+        self.brm2 = _BoundaryRefineModule(num_classes)
+        self.brm3 = _BoundaryRefineModule(num_classes)
+        self.brm4 = _BoundaryRefineModule(num_classes)
+        self.brm5 = _BoundaryRefineModule(num_classes)
+        self.brm6 = _BoundaryRefineModule(num_classes)
+        self.brm7 = _BoundaryRefineModule(num_classes)
+        self.brm8 = _BoundaryRefineModule(num_classes)
+        self.brm9 = _BoundaryRefineModule(num_classes)
+
+        initialize_weights(self.gcm1, self.gcm2, self.gcm3, self.gcm4, self.brm1, self.brm2, self.brm3,
+                           self.brm4, self.brm5, self.brm6, self.brm7, self.brm8, self.brm9)
+
+    def forward(self, x):
+        # if x: 512
+        fm0 = self.layer0(x)  # 256
+        fm1 = self.layer1(fm0)  # 128
+        fm2 = self.layer2(fm1)  # 64
+        fm3 = self.layer3(fm2)  # 32
+        fm4 = self.layer4(fm3)  # 16
+
+        gcfm1 = self.brm1(self.gcm1(fm4))  # 16
+        gcfm2 = self.brm2(self.gcm2(fm3))  # 32
+        gcfm3 = self.brm3(self.gcm3(fm2))  # 64
+        gcfm4 = self.brm4(self.gcm4(fm1))  # 128
+
+        fs1 = self.brm5(F.upsample(gcfm1, fm3.size()[2:], mode='bilinear', align_corners=True) + gcfm2)  # 32
+        fs2 = self.brm6(F.upsample(fs1, fm2.size()[2:], mode='bilinear', align_corners=True) + gcfm3)  # 64
+        fs3 = self.brm7(F.upsample(fs2, fm1.size()[2:], mode='bilinear', align_corners=True) + gcfm4)  # 128
+        fs4 = self.brm8(F.upsample(fs3, fm0.size()[2:], mode='bilinear', align_corners=True))  # 256
+        out = self.brm9(F.upsample(fs4, self.input_size, mode='bilinear', align_corners=True))  # 512
+
+        return out
+
+
+class GCN152(nn.Module):
+    def __init__(self, num_classes, input_size, pretrained=True):
+        super(GCN152, self).__init__()
         self.input_size = input_size
         self.num_classes = num_classes
         resnet = models.resnet152(pretrained)
@@ -102,13 +158,10 @@ class GCN(nn.Module):
         gcfm3 = self.brm3(self.gcm3(fm2))  # 64
         gcfm4 = self.brm4(self.gcm4(fm1))  # 128
 
-        fs1 = self.brm5(F.upsample_bilinear(gcfm1, fm3.size()[2:]) + gcfm2)  # 32
-        fs2 = self.brm6(F.upsample_bilinear(fs1, fm2.size()[2:]) + gcfm3)  # 64
-        fs3 = self.brm7(F.upsample_bilinear(fs2, fm1.size()[2:]) + gcfm4)  # 128
-        fs4 = self.brm8(F.upsample_bilinear(fs3, fm0.size()[2:]))  # 256
-        out = self.brm9(F.upsample_bilinear(fs4, self.input_size))  # 512
-
-        if self.num_classes > 1:
-            out = F.log_softmax(out, dim=1)
+        fs1 = self.brm5(F.upsample(gcfm1, fm3.size()[2:], mode='bilinear', align_corners=True) + gcfm2)  # 32
+        fs2 = self.brm6(F.upsample(fs1, fm2.size()[2:], mode='bilinear', align_corners=True) + gcfm3)  # 64
+        fs3 = self.brm7(F.upsample(fs2, fm1.size()[2:], mode='bilinear', align_corners=True) + gcfm4)  # 128
+        fs4 = self.brm8(F.upsample(fs3, fm0.size()[2:], mode='bilinear', align_corners=True))  # 256
+        out = self.brm9(F.upsample(fs4, self.input_size, mode='bilinear', align_corners=True))  # 512
 
         return out

@@ -344,116 +344,6 @@ class RandomCrop(object):
         return x, mask
 
 
-class Distort1:
-    """"
-    ## unconverntional augmnet ################################################################################3
-    ## https://stackoverflow.com/questions/6199636/formulas-for-barrel-pincushion-distortion
-
-    ## https://stackoverflow.com/questions/10364201/image-transformation-in-opencv
-    ## https://stackoverflow.com/questions/2477774/correcting-fisheye-distortion-programmatically
-    ## http://www.coldvision.io/2017/03/02/advanced-lane-finding-using-opencv/
-
-    ## barrel\pincushion distortion
-    """
-
-    def __init__(self, distort_limit=0.35, shift_limit=0.25, prob=0.5):
-        self.distort_limit = distort_limit
-        self.shift_limit = shift_limit
-        self.prob = prob
-
-    def __call__(self, img, mask=None):
-        if random.random() < self.prob:
-            height, width, channel = img.shape
-
-            if 0:
-                img = img.copy()
-                for x in range(0, width, 10):
-                    cv2.line(img, (x, 0), (x, height), (1, 1, 1), 1)
-                for y in range(0, height, 10):
-                    cv2.line(img, (0, y), (width, y), (1, 1, 1), 1)
-
-            k = random.uniform(-self.distort_limit, self.distort_limit) * 0.00001
-            dx = random.uniform(-self.shift_limit, self.shift_limit) * width
-            dy = random.uniform(-self.shift_limit, self.shift_limit) * height
-
-            #  map_x, map_y =
-            # cv2.initUndistortRectifyMap(intrinsics, dist_coeffs, None, None, (width,height),cv2.CV_32FC1)
-            # https://stackoverflow.com/questions/6199636/formulas-for-barrel-pincushion-distortion
-            # https://stackoverflow.com/questions/10364201/image-transformation-in-opencv
-            x, y = np.mgrid[0:width:1, 0:height:1]
-            x = x.astype(np.float32) - width / 2 - dx
-            y = y.astype(np.float32) - height / 2 - dy
-            theta = np.arctan2(y, x)
-            d = (x * x + y * y) ** 0.5
-            r = d * (1 + k * d * d)
-            map_x = r * np.cos(theta) + width / 2 + dx
-            map_y = r * np.sin(theta) + height / 2 + dy
-
-            img = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
-            if mask is not None:
-                mask = cv2.remap(mask, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
-        return img, mask
-
-
-class Distort2:
-    """
-    #http://pythology.blogspot.sg/2014/03/interpolation-on-regular-distorted-grid.html
-    ## grid distortion
-    """
-
-    def __init__(self, num_steps=10, distort_limit=0.2, prob=0.5):
-        self.num_steps = num_steps
-        self.distort_limit = distort_limit
-        self.prob = prob
-
-    def __call__(self, img, mask=None):
-        if random.random() < self.prob:
-            height, width, channel = img.shape
-
-            x_step = width // self.num_steps
-            xx = np.zeros(width, np.float32)
-            prev = 0
-            for x in range(0, width, x_step):
-                start = x
-                end = x + x_step
-                if end > width:
-                    end = width
-                    cur = width
-                else:
-                    cur = prev + x_step * (1 + random.uniform(-self.distort_limit, self.distort_limit))
-
-                xx[start:end] = np.linspace(prev, cur, end - start)
-                prev = cur
-
-            y_step = height // self.num_steps
-            yy = np.zeros(height, np.float32)
-            prev = 0
-            for y in range(0, height, y_step):
-                start = y
-                end = y + y_step
-                if end > width:
-                    end = height
-                    cur = height
-                else:
-                    cur = prev + y_step * (1 + random.uniform(-self.distort_limit, self.distort_limit))
-
-                yy[start:end] = np.linspace(prev, cur, end - start)
-                prev = cur
-
-            map_x, map_y = np.meshgrid(xx, yy)
-            map_x = map_x.astype(np.float32)
-            map_y = map_y.astype(np.float32)
-            img = cv2.remap(img, map_x, map_y,
-                            interpolation=cv2.INTER_LINEAR,
-                            borderMode=cv2.BORDER_REFLECT_101)
-            if mask is not None:
-                mask = cv2.remap(mask, map_x, map_y,
-                                 interpolation=cv2.INTER_LINEAR,
-                                 borderMode=cv2.BORDER_REFLECT_101)
-
-        return img, mask
-
-
 def clip(img, dtype, maxval):
     return np.clip(img, 0, maxval).astype(dtype)
 
@@ -560,43 +450,14 @@ class RandomHueSaturationValue:
 
 
 class NormalizeImage:
-    """
-        x /= 127.5
-        x -= 1.
-    """
-
-    def __init__(self, alpha=1. / 127.5, beta=-1.):
-        self.alpha = float(alpha)
-        self.beta = float(beta)
+    def __init__(self, scale=1. / 255., mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+        self.scale = float(scale)
+        self.mean = np.array(mean, dtype=np.float32)
+        self.std = np.array(std, dtype=np.float32)
 
     def __call__(self, x):
-        x = x.astype(np.float32)
-        x *= self.alpha
-        x += self.beta
+        x = (x * self.scale - self.mean) / self.std
         return x
-
-
-class ToTensors:
-    """
-    Converts image and mask into two pytorch tensors
-    """
-
-    @staticmethod
-    def to_float_tensor(img: np.ndarray):
-        # .copy() because RuntimeError: some of the strides of a given numpy array are negative.
-        #  This is currently not supported, but will be added in future releases.
-        # https://discuss.pytorch.org/t/torch-from-numpy-not-support-negative-strides/3663
-        tensor = torch.from_numpy(np.moveaxis(img.copy(), -1, 0)).float()
-        return tensor
-
-    def __call__(self, x, mask):
-        if len(x.shape) < 3:
-            x = np.expand_dims(x, axis=-1)
-
-        if len(mask.shape) < 3:
-            mask = np.expand_dims(mask, axis=-1)
-
-        return ToTensors.to_float_tensor(x), ToTensors.to_float_tensor(mask)
 
 
 class CLAHE:
@@ -610,3 +471,35 @@ class CLAHE:
         img_yuv[:, :, 0] = clahe.apply(img_yuv[:, :, 0])
         img_output = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
         return img_output
+
+
+def tta_d4_aug(images):
+    for image in images:
+        yield image
+        yield np.rot90(image, 1)
+        yield np.rot90(image, 2)
+        yield np.rot90(image, 3)
+
+        yield np.fliplr(image)
+        yield np.fliplr(np.rot90(image, 1))
+        yield np.fliplr(np.rot90(image, 2))
+        yield np.fliplr(np.rot90(image, 3))
+
+
+def tta_d4_deaug(image_list):
+    assert len(image_list) % 8 == 0
+    for i in range(0, len(image_list), 8):
+        img = np.zeros_like(image_list[i])
+
+        img += image_list[i + 0]
+        img += np.rot90(image_list[i + 1], -1)
+        img += np.rot90(image_list[i + 2], -2)
+        img += np.rot90(image_list[i + 3], -3)
+
+        img += np.fliplr(image_list[i + 4])
+        img += np.rot90(np.fliplr(image_list[i + 5]), -1)
+        img += np.rot90(np.fliplr(image_list[i + 6]), -2)
+        img += np.rot90(np.fliplr(image_list[i + 7]), -3)
+        img /= 8.
+
+        yield img

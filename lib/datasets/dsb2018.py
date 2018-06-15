@@ -4,7 +4,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 
 from lib.tiles import ImageSlicer
-from lib.torch.common import find_in_dir, ImageMaskDataset, read_rgb, read_gray, RawDataset
+from lib.common import find_in_dir, ImageMaskDataset, read_rgb, read_mask, InMemoryDataset
 from lib import augmentations as aug
 
 
@@ -33,8 +33,7 @@ def DSB2018(dataset_dir, grayscale, patch_size):
         # aug.VerticalFlip(),
         # aug.HorizontalFlip(),
         # aug.ShiftScaleRotate(),
-        aug.MaskOnly(aug.MakeBinary()),
-        aug.ToTensors()
+        aug.MaskOnly(aug.MakeBinary())
     ])
 
     test_transform = aug.Sequential([
@@ -42,11 +41,10 @@ def DSB2018(dataset_dir, grayscale, patch_size):
         # aug.ImageOnly(aug.RandomGrayscale(1.0 if grayscale else 0.0)),
         aug.ImageOnly(aug.NormalizeImage()),
         aug.MaskOnly(aug.MakeBinary()),
-        aug.ToTensors()
     ])
 
-    train = ImageMaskDataset(x_train, y_train, image_loader=read_rgb, target_loader=read_gray, transform=train_transform, load_in_ram=False)
-    test = ImageMaskDataset(x_test, y_test, image_loader=read_rgb, target_loader=read_gray, transform=test_transform, load_in_ram=False)
+    train = ImageMaskDataset(x_train, y_train, image_loader=read_rgb, target_loader=read_mask, transform=train_transform, load_in_ram=False)
+    test = ImageMaskDataset(x_test, y_test, image_loader=read_rgb, target_loader=read_mask, transform=test_transform, load_in_ram=False)
     num_classes = 1
     return train, test, num_classes
 
@@ -61,7 +59,7 @@ def DSB2018Sliced(dataset_dir, grayscale, patch_size):
     """
 
     images = [read_rgb(x) for x in find_in_dir(os.path.join(dataset_dir, 'images'))]
-    masks = [read_gray(x) for x in find_in_dir(os.path.join(dataset_dir, 'masks'))]
+    masks = [read_mask(x) for x in find_in_dir(os.path.join(dataset_dir, 'masks'))]
 
     image_ids = []
     patch_images = []
@@ -86,17 +84,15 @@ def DSB2018Sliced(dataset_dir, grayscale, patch_size):
         aug.VerticalFlip(),
         aug.HorizontalFlip(),
         aug.ShiftScaleRotate(rotate_limit=15),
-        aug.MaskOnly(aug.MakeBinary()),
-        aug.ToTensors()
+        aug.MaskOnly(aug.MakeBinary())
     ])
 
     test_transform = aug.Sequential([
         aug.ImageOnly(aug.NormalizeImage()),
-        aug.MaskOnly(aug.MakeBinary()),
-        aug.ToTensors()
+        aug.MaskOnly(aug.MakeBinary())
     ])
 
-    train = RawDataset(x_train, y_train, transform=train_transform)
-    test = RawDataset(x_test, y_test, transform=test_transform)
+    train = InMemoryDataset(x_train, y_train, transform=train_transform)
+    test = InMemoryDataset(x_test, y_test, transform=test_transform)
     num_classes = 1
     return train, test, num_classes

@@ -181,10 +181,6 @@ class FCDenseNet(nn.Module):
             out = self.denseBlocksUp[i](out)
 
         out = self.finalConv(out)
-
-        if self.num_classes > 1:
-            out = self.softmax(out)
-
         return out
 
 

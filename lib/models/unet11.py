@@ -5,21 +5,20 @@ import torchvision
 from torch.nn import functional as F
 
 
-def factorized_conv3x3(in_, out):
-    return nn.Sequential(nn.Conv2d(in_, out, (3, 1), padding=(1, 0)), nn.Conv2d(out, out, (1, 3), padding=(0, 1)))
+def conv3x3(in_, out):
+    return nn.Conv2d(in_, out, 3, padding=1)
 
 
-class FactorizedConvRelu(nn.Module):
+class ConvRelu(nn.Module):
     def __init__(self, in_: int, out: int):
         super().__init__()
-        self.conv = factorized_conv3x3(in_, out)
+        self.conv = conv3x3(in_, out)
         self.activation = nn.ReLU(inplace=True)
 
     def forward(self, x):
         x = self.conv(x)
         x = self.activation(x)
         return x
-
 
 class DecoderBlock(nn.Module):
     """
@@ -33,7 +32,7 @@ class DecoderBlock(nn.Module):
 
         if is_deconv:
             self.block = nn.Sequential(
-                FactorizedConvRelu(in_channels, middle_channels),
+                ConvRelu(in_channels, middle_channels),
                 nn.ConvTranspose2d(middle_channels, out_channels, kernel_size=4, stride=2,
                                    padding=1),
                 nn.ReLU(inplace=True)
@@ -41,15 +40,15 @@ class DecoderBlock(nn.Module):
         else:
             self.block = nn.Sequential(
                 nn.Upsample(scale_factor=2, mode='bilinear'),
-                FactorizedConvRelu(in_channels, middle_channels),
-                FactorizedConvRelu(middle_channels, out_channels),
+                ConvRelu(in_channels, middle_channels),
+                ConvRelu(middle_channels, out_channels),
             )
 
     def forward(self, x):
         return self.block(x)
 
 
-class FactorizedUNet11(nn.Module):
+class UNet11(nn.Module):
     def __init__(self, num_classes=1, num_filters=32, pretrained=False):
         """
         :param num_classes:
@@ -100,7 +99,7 @@ class FactorizedUNet11(nn.Module):
         self.dec4 = DecoderBlock(512 + num_filters * 8, num_filters * 8 * 2, num_filters * 4, is_deconv=True)
         self.dec3 = DecoderBlock(256 + num_filters * 4, num_filters * 4 * 2, num_filters * 2, is_deconv=True)
         self.dec2 = DecoderBlock(128 + num_filters * 2, num_filters * 2 * 2, num_filters, is_deconv=True)
-        self.dec1 = FactorizedConvRelu(64 + num_filters, num_filters)
+        self.dec1 = ConvRelu(64 + num_filters, num_filters)
 
         self.final = nn.Conv2d(num_filters, num_classes, kernel_size=1)
 
@@ -118,9 +117,6 @@ class FactorizedUNet11(nn.Module):
         dec2 = self.dec2(torch.cat([dec3, conv2], 1))
         dec1 = self.dec1(torch.cat([dec2, conv1], 1))
 
-        if self.num_classes > 1:
-            x_out = F.log_softmax(self.final(dec1), dim=1)
-        else:
-            x_out = self.final(dec1)
+        x_out = self.final(dec1)
 
         return x_out

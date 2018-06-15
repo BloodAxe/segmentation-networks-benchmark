@@ -51,6 +51,8 @@ class ImageSlicer:
             'pyramid': self._pyramid
         }
 
+        self.compute_weight = weights[weight]
+
         if tile_step < 1 or tile_step > tile_size:
             raise ValueError()
 
@@ -87,7 +89,6 @@ class ImageSlicer:
             self.margin_top = image_margin
             self.margin_bottom = image_margin
 
-        self.weight = weights[weight](tile_size)
         self.crops = []
 
         for y in range(0, self.image_height + self.margin_top + self.margin_bottom - tile_size + 1, tile_step):
@@ -115,6 +116,24 @@ class ImageSlicer:
 
         return tiles
 
+    def cut_patch(self, image, slice_index, borderType=cv2.BORDER_REFLECT101, value=0):
+        assert image.shape[0] == self.image_height
+        assert image.shape[1] == self.image_width
+
+        orig_shape_len = len(image.shape)
+        image = cv2.copyMakeBorder(image, self.margin_top, self.margin_bottom, self.margin_left, self.margin_right, borderType=borderType, value=value)
+
+        # This check recovers possible lack of last dummy dimension for single-channel images
+        if len(image.shape) != orig_shape_len:
+            image = np.expand_dims(image,axis=-1)
+
+        x, y, tile_width, tile_height = self.crops[slice_index]
+
+        tile = image[y:y + tile_height, x:x + tile_width].copy()
+        assert tile.shape[0] == self.tile_size
+        assert tile.shape[1] == self.tile_size
+        return tile
+
     def merge(self, tiles, dtype=np.float32):
         if len(tiles) != len(self.crops):
             raise ValueError
@@ -124,7 +143,9 @@ class ImageSlicer:
 
         image = np.zeros(target_shape, dtype=np.float64)
         norm_mask = np.zeros(target_shape, dtype=np.float64)
-        w = np.dstack([self.weight] * channels)
+
+        weight = self.compute_weight(self.tile_size)
+        w = np.dstack([weight] * channels)
 
         for tile, (x, y, tile_width, tile_height) in zip(tiles, self.crops):
             # print(x, y, tile_width, tile_height, image.shape)

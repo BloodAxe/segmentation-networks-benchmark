@@ -93,7 +93,4 @@ class PSPNet(nn.Module):
         else:
             out = F.upsample(x, x_size[2:], mode='bilinear')
 
-        if self.num_classes > 1:
-            out = F.log_softmax(out, dim=1)
-
         return out

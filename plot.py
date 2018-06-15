@@ -15,6 +15,7 @@ def plot_train_history(names, loss, val_loss, title=None, legend_loc='upper righ
 
     ax1, ax2 = fig.subplots(1, 2)
 
+    # ax1.set_color_cycle([cm(1.*i/NUM_COLORS) for i in range(NUM_COLORS)])
     for m in loss:
         ax1.plot(m)
 
@@ -62,11 +63,11 @@ def plot_experiment_train_history(name, loss, val_loss, metric, val_metric):
 
 def main():
     experiments = {
-        'GCN': pd.read_csv(os.path.join('experiments', 'torch_gcn_224_rgb_bce', 'torch_gcn_224_rgb_bce.csv')),
-        'Linknet + Resnet34': pd.read_csv(os.path.join('experiments', 'torch_linknet34_224_rgb_bce', 'torch_linknet34_224_rgb_bce.csv')),
-        'Unet + VGG11': pd.read_csv(os.path.join('experiments', 'torch_unet11_224_rgb_bce', 'torch_unet11_224_rgb_bce.csv')),
-        'Unet + VGG116': pd.read_csv(os.path.join('experiments', 'torch_unet16_224_rgb_bce', 'torch_unet16_224_rgb_bce.csv')),
-        # 'Unet (Vanilla)': pd.read_csv(os.path.join('experiments', 'torch_unet16_224_rgb_bce', 'torch_unet16_224_rgb_bce.csv')),
+        'ZF_UNET': pd.read_csv(os.path.join('experiments', 'dsb2018', 'bce', 'torch_dsb2018_zf_unet_224_rgb_bce', 'torch_dsb2018_zf_unet_224_rgb_bce.csv')),
+        'Linknet (Resnet34)': pd.read_csv(os.path.join('experiments', 'dsb2018', 'bce', 'torch_dsb2018_linknet34_224_rgb_bce', 'torch_dsb2018_linknet34_224_rgb_bce.csv')),
+        'Unet (VGG16)': pd.read_csv(os.path.join('experiments', 'dsb2018', 'bce', 'torch_dsb2018_unet16_224_rgb_bce', 'torch_dsb2018_unet16_224_rgb_bce.csv')),
+        'Unet (VGG11)': pd.read_csv(os.path.join('experiments', 'dsb2018', 'bce', 'torch_dsb2018_unet11_224_rgb_bce', 'torch_dsb2018_unet11_224_rgb_bce.csv')),
+        'GCN': pd.read_csv(os.path.join('experiments', 'dsb2018', 'bce', 'torch_dsb2018_gcn_224_rgb_bce', 'torch_dsb2018_gcn_224_rgb_bce.csv')),
     }
 
     names = []
@@ -79,10 +80,10 @@ def main():
         loss.append(item[['loss']])
         val_loss.append(item[['val_loss']])
 
-        metric.append(item[['jaccard']])
-        val_metric.append(item[['val_jaccard']])
+        metric.append(item[['JaccardScore']])
+        val_metric.append(item[['val_JaccardScore']])
 
-        plot_experiment_train_history(key, item[['loss']], item[['val_loss']], item[['jaccard']], item[['val_jaccard']])
+        plot_experiment_train_history(key, item[['loss']], item[['val_loss']], item[['JaccardScore']], item[['val_JaccardScore']])
 
     plot_train_history(names, loss, val_loss, 'DSB2018, BCE loss', legend_loc='upper right')
     plot_train_history(names, metric, val_metric, 'DSB2018, Jaccard score', legend_loc='lower right')

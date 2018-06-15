@@ -92,6 +92,4 @@ class ZF_UNET(nn.Module):
 
         out = self.conv_final(up_conv_224)
 
-        if self.num_classes > 1:
-            out = F.log_softmax(out, dim=1)
         return out

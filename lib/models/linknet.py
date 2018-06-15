@@ -61,6 +61,7 @@ class LinkNet34(nn.Module):
         self.decoder1 = DecoderBlockLinkNet(filters[0], filters[0])
 
         # Final Classifier
+        self.finaldrop1 = nn.Dropout2d(p=0.5)
         self.finaldeconv1 = nn.ConvTranspose2d(filters[0], 32, 3, stride=2)
         self.finalrelu1 = nn.ReLU(inplace=True)
         self.finalconv2 = nn.Conv2d(32, 32, 3)
@@ -86,14 +87,11 @@ class LinkNet34(nn.Module):
         d1 = self.decoder1(d2)
 
         # Final Classification
+        # d1 = self.finaldrop1(d1) # Added dropout
         f1 = self.finaldeconv1(d1)
         f2 = self.finalrelu1(f1)
         f3 = self.finalconv2(f2)
         f4 = self.finalrelu2(f3)
         f5 = self.finalconv3(f4)
 
-        if self.num_classes > 1:
-            x_out = F.log_softmax(f5, dim=1)
-        else:
-            x_out = f5
-        return x_out
+        return f5
