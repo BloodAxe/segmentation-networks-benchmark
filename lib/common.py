@@ -17,8 +17,9 @@ def maybe_cuda(x):
 
 
 def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
+    total = sum(p.numel() for p in model.parameters())
+    trainable =  sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total, trainable
 
 def show_landmarks_batch(data):
     x, y = data

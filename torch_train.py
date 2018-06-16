@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 from torch import nn
 from tensorboardX import SummaryWriter
+from torch.backends import cudnn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
@@ -65,7 +66,7 @@ def get_loss(loss):
         return BCEWithLogitsLossAndSmoothJaccard()
 
     if loss == 'focal':
-        return FocalLossBinary()
+        return FocalLossBinary(size_average=False)
 
     if loss == 'bce':
         return BCEWithSigmoidLoss()
@@ -299,6 +300,7 @@ def main():
     parser.add_argument('-mem', '--memory', action='store_true')
 
     args = parser.parse_args()
+    cudnn.benchmark = True
 
     if args.experiment is None:
         args.experiment = 'torch_%s_%s_%d_%s_%s' % (args.dataset, args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)

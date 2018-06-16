@@ -474,32 +474,65 @@ class CLAHE:
 
 
 def tta_d4_aug(images):
+    res = []
     for image in images:
-        yield image
-        yield np.rot90(image, 1)
-        yield np.rot90(image, 2)
-        yield np.rot90(image, 3)
+        res.extend([
+            image,
+            np.rot90(image, 1),
+            np.rot90(image, 2),
+            np.rot90(image, 3),
 
-        yield np.fliplr(image)
-        yield np.fliplr(np.rot90(image, 1))
-        yield np.fliplr(np.rot90(image, 2))
-        yield np.fliplr(np.rot90(image, 3))
+            np.fliplr(image),
+            np.fliplr(np.rot90(image, 1)),
+            np.fliplr(np.rot90(image, 2)),
+            np.fliplr(np.rot90(image, 3))
+        ])
+
+    return res
 
 
 def tta_d4_deaug(image_list):
     assert len(image_list) % 8 == 0
+    res = []
+    one_over_8 = float(1./8.)
+
     for i in range(0, len(image_list), 8):
-        img = np.zeros_like(image_list[i])
+        img = (image_list[i + 0] +
+               np.rot90(image_list[i + 1], -1)+
+               np.rot90(image_list[i + 2], -2)+
+               np.rot90(image_list[i + 3], -3)+
+               np.fliplr(image_list[i + 4])+
+               np.rot90(np.fliplr(image_list[i + 5]), -1)+
+               np.rot90(np.fliplr(image_list[i + 6]), -2)+
+               np.rot90(np.fliplr(image_list[i + 7]), -3)) * one_over_8
 
-        img += image_list[i + 0]
-        img += np.rot90(image_list[i + 1], -1)
-        img += np.rot90(image_list[i + 2], -2)
-        img += np.rot90(image_list[i + 3], -3)
+        res.append(img)
 
-        img += np.fliplr(image_list[i + 4])
-        img += np.rot90(np.fliplr(image_list[i + 5]), -1)
-        img += np.rot90(np.fliplr(image_list[i + 6]), -2)
-        img += np.rot90(np.fliplr(image_list[i + 7]), -3)
-        img /= 8.
+    return res
 
-        yield img
+def pad(image, pad_size: int, **kwargs):
+    rows, cols = image.shape[:2]
+
+    pad_rows = rows % pad_size
+    pad_cols = cols % pad_size
+
+    if pad_rows == 0 and pad_cols == 0:
+        return image, (0, 0, 0, 0)
+
+    pad_rows = pad_size - pad_rows
+    pad_cols = pad_size - pad_cols
+
+    pad_top = pad_rows // 2
+    pad_btm = pad_rows - pad_top
+
+    pad_left = pad_cols // 2
+    pad_right = pad_cols - pad_left
+
+    image = cv2.copyMakeBorder(image, pad_top, pad_btm, pad_left, pad_right, **kwargs)
+    return image, (pad_top, pad_btm, pad_left, pad_right)
+
+
+def unpad(image, pad):
+    pad_top, pad_btm, pad_left, pad_right = pad
+    rows, cols = image.shape[:2]
+    return image[pad_top:rows - pad_btm, pad_left: cols - pad_right]

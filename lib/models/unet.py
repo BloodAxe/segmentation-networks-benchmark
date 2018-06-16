@@ -4,94 +4,110 @@ from torchvision import models
 import torchvision
 from torch.nn import functional as F
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-def conv3x3(in_, out):
-    return nn.Conv2d(in_, out, 3, padding=1)
 
+class double_conv(nn.Module):
+    '''(conv => BN => ReLU) * 2'''
 
-class Conv3BN(nn.Module):
-    def __init__(self, in_: int, out: int, bn=False):
-        super().__init__()
-        self.conv = conv3x3(in_, out)
-        self.bn = nn.BatchNorm2d(out) if bn else None
-        self.activation = nn.ReLU(inplace=True)
+    def __init__(self, in_ch, out_ch):
+        super(double_conv, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True)
+        )
 
     def forward(self, x):
         x = self.conv(x)
-        if self.bn is not None:
-            x = self.bn(x)
-        x = self.activation(x)
         return x
 
 
-class UNetModule(nn.Module):
-    def __init__(self, in_: int, out: int):
-        super().__init__()
-        self.l1 = Conv3BN(in_, out)
-        self.l2 = Conv3BN(out, out)
+class inconv(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super(inconv, self).__init__()
+        self.conv = double_conv(in_ch, out_ch)
 
     def forward(self, x):
-        x = self.l1(x)
-        x = self.l2(x)
+        x = self.conv(x)
+        return x
+
+
+class down(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super(down, self).__init__()
+        self.mpconv = nn.Sequential(
+            nn.MaxPool2d(2),
+            double_conv(in_ch, out_ch)
+        )
+
+    def forward(self, x):
+        x = self.mpconv(x)
+        return x
+
+
+class up(nn.Module):
+    def __init__(self, in_ch, out_ch, bilinear=True):
+        super(up, self).__init__()
+
+        #  would be a nice idea if the upsampling could be learned too,
+        #  but my machine do not have enough memory to handle all those weights
+        if bilinear:
+            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        else:
+            self.up = nn.ConvTranspose2d(in_ch // 2, in_ch // 2, 2, stride=2)
+
+        self.conv = double_conv(in_ch, out_ch)
+
+    def forward(self, x1, x2):
+        x1 = self.up(x1)
+        diffX = x1.size()[2] - x2.size()[2]
+        diffY = x1.size()[3] - x2.size()[3]
+        x2 = F.pad(x2, (diffX // 2, int(diffX / 2),
+                        diffY // 2, int(diffY / 2)))
+        x = torch.cat([x2, x1], dim=1)
+        x = self.conv(x)
+        return x
+
+
+class outconv(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super(outconv, self).__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, 1)
+
+    def forward(self, x):
+        x = self.conv(x)
         return x
 
 
 class UNet(nn.Module):
-    """
-    Vanilla UNet.
-    Implementation from https://github.com/lopuhin/mapillary-vistas-2017/blob/master/unet_models.py
-    """
-    output_downscaled = 1
-    module = UNetModule
-
-    def __init__(self,
-                 input_channels: int = 3,
-                 filters_base: int = 32,
-                 down_filter_factors=(1, 2, 4, 8, 16),
-                 up_filter_factors=(1, 2, 4, 8, 16),
-                 bottom_s=4,
-                 num_classes=1,
-                 add_output=True):
+    def __init__(self, n_channels, n_classes, n_filters=32):
         super(UNet, self).__init__()
-        self.num_classes = num_classes
-        assert len(down_filter_factors) == len(up_filter_factors)
-        assert down_filter_factors[-1] == up_filter_factors[-1]
-        down_filter_sizes = [filters_base * s for s in down_filter_factors]
-        up_filter_sizes = [filters_base * s for s in up_filter_factors]
-        self.down, self.up = nn.ModuleList(), nn.ModuleList()
-        self.down.append(self.module(input_channels, down_filter_sizes[0]))
-        for prev_i, nf in enumerate(down_filter_sizes[1:]):
-            self.down.append(self.module(down_filter_sizes[prev_i], nf))
-        for prev_i, nf in enumerate(up_filter_sizes[1:]):
-            self.up.append(self.module(
-                down_filter_sizes[prev_i] + nf, up_filter_sizes[prev_i]))
-        pool = nn.MaxPool2d(2, 2)
-        pool_bottom = nn.MaxPool2d(bottom_s, bottom_s)
-        upsample = nn.Upsample(scale_factor=2)
-        upsample_bottom = nn.Upsample(scale_factor=bottom_s)
-        self.downsamplers = [None] + [pool] * (len(self.down) - 1)
-        self.downsamplers[-1] = pool_bottom
-        self.upsamplers = [upsample] * len(self.up)
-        self.upsamplers[-1] = upsample_bottom
-        self.add_output = add_output
-        if add_output:
-            self.conv_final = nn.Conv2d(up_filter_sizes[0], num_classes, 1)
+        self.inc = inconv(n_channels, n_filters)
+        self.down1 = down(n_filters, n_filters*2)
+        self.down2 = down(n_filters*2, n_filters*4)
+        self.down3 = down(n_filters*4, n_filters*8)
+        self.down4 = down(n_filters*8, n_filters*8)
+        self.up1 = up(n_filters*16, n_filters*4)
+        self.up2 = up(n_filters*8, n_filters*2)
+        self.up3 = up(n_filters*4, n_filters)
+        self.up4 = up(n_filters*2, n_filters)
+        self.outc = outconv(n_filters, n_classes)
 
     def forward(self, x):
-        xs = []
-        for downsample, down in zip(self.downsamplers, self.down):
-            x_in = x if downsample is None else downsample(xs[-1])
-            x_out = down(x_in)
-            xs.append(x_out)
-
-        x_out = xs[-1]
-        for x_skip, upsample, up in reversed(
-                list(zip(xs[:-1], self.upsamplers, self.up))):
-            x_out = upsample(x_out)
-            x_out = up(torch.cat([x_out, x_skip], 1))
-
-        if self.add_output:
-            x_out = self.conv_final(x_out)
-
-        return x_out
-
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        x = self.outc(x)
+        return x
