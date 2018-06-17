@@ -153,12 +153,13 @@ def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_wr
                 if summary_writer is not None:
                     summary_writer.add_scalar('train/batch/loss', batch_loss_val, epoch * n_batches + batch_index)
 
-                    # Plot gradient absmax to see if there are any gradient explosions
+                    # Plot gradient absmax and absmin to see if there are any gradient explosions
                     grad_max = 0
                     for name, param in model.named_parameters():
                         if param.grad is not None:
                             grad_max = max(grad_max, param.grad.abs().max().cpu().item())
-                    summary_writer.add_scalar('train/grad/global_max', grad_max, epoch * n_batches + batch_index)
+
+                    summary_writer.add_scalar('train/grad/global_abs_max', grad_max, epoch * n_batches + batch_index)
 
                 losses.update(batch_loss_val)
 

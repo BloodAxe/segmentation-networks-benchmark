@@ -86,7 +86,7 @@ class outconv(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, n_filters=32):
+    def __init__(self, n_channels=3, n_classes=1, n_filters=32):
         super(UNet, self).__init__()
         self.inc = inconv(n_channels, n_filters)
         self.down1 = down(n_filters, n_filters*2)
@@ -97,6 +97,7 @@ class UNet(nn.Module):
         self.up2 = up(n_filters*8, n_filters*2)
         self.up3 = up(n_filters*4, n_filters)
         self.up4 = up(n_filters*2, n_filters)
+        self.finaldrop = nn.Dropout2d(p=0.5)
         self.outc = outconv(n_filters, n_classes)
 
     def forward(self, x):
@@ -109,5 +110,6 @@ class UNet(nn.Module):
         x = self.up2(x, x3)
         x = self.up3(x, x2)
         x = self.up4(x, x1)
+        x = self.finaldrop(x)
         x = self.outc(x)
         return x
