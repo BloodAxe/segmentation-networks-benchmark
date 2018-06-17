@@ -20,11 +20,13 @@ from lib.metrics import JaccardScore, PixelAccuracy
 from lib.models import linknet, unet16, unet11
 from lib.models.duc_hdc import ResNetDUCHDC, ResNetDUC
 from lib.models.gcn152 import GCN152, GCN34
+from lib.models.linknext import LinkNext
 from lib.models.psp_net import PSPNet
 from lib.models.tiramisu import FCDenseNet67
 from lib.models.unet import UNet
 from lib.models.zf_unet import ZF_UNET
 from lib.train_utils import AverageMeter
+from lib.common import count_parameters
 
 tqdm.monitor_interval = 0  # Workaround for https://github.com/tqdm/tqdm/issues/481
 
@@ -91,6 +93,9 @@ def get_model(model_name, patch_size, num_channels):
 
     if model_name == 'linknet34':
         return linknet.LinkNet34(pretrained=True, num_channels=num_channels, num_classes=1)
+
+    if model_name == 'linknext':
+        return LinkNext(num_channels=num_channels, num_classes=1)
 
     if model_name == 'tiramisu67':
         return FCDenseNet67(n_classes=1)
@@ -322,6 +327,8 @@ def main():
     trainset, validset, num_classes = get_dataset(args.dataset, args.data_dir, grayscale=args.grayscale, patch_size=args.patch_size, keep_in_mem=args.memory)
     print('Train set size', len(trainset))
     print('Valid set size', len(validset))
+    print('Model         ', model)
+    print('Parameters    ', count_parameters(model))
 
     trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True, drop_last=True)
     validloader = DataLoader(validset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True, drop_last=True)
@@ -329,6 +336,12 @@ def main():
     start_epoch = 0
     best_loss = np.inf
     train_history = pd.DataFrame()
+
+    # Write model graph
+    z = torch.Tensor((1, 1 if args.grayscale else 3, args.patch_size, args.patch_size))
+    z.requires_grad=True
+    writer.add_graph(model, z, verbose=True)
+
 
     checkpoint_filename = os.path.join(experiment_dir, f'{args.model}_checkpoint.pth')
     if args.resume:
