@@ -15,9 +15,11 @@ from tqdm import tqdm
 
 from lib.datasets.Inria import INRIA
 from lib.datasets.dsb2018 import DSB2018Sliced
+from lib.datasets.shapes import SHAPES
 from lib.losses import JaccardLoss, FocalLossBinary, BCEWithLogitsLossAndSmoothJaccard, BCEWithSigmoidLoss
 from lib.metrics import JaccardScore, PixelAccuracy
 from lib.models import linknet, unet16, unet11
+from lib.models.dilated_linknet import DilatedLinkNet34
 from lib.models.duc_hdc import ResNetDUCHDC, ResNetDUC
 from lib.models.gcn152 import GCN152, GCN34
 from lib.models.linknext import LinkNext
@@ -25,7 +27,7 @@ from lib.models.psp_net import PSPNet
 from lib.models.tiramisu import FCDenseNet67
 from lib.models.unet import UNet
 from lib.models.zf_unet import ZF_UNET
-from lib.train_utils import AverageMeter
+from lib.train_utils import AverageMeter, PRCurveMeter
 from lib.common import count_parameters
 
 tqdm.monitor_interval = 0  # Workaround for https://github.com/tqdm/tqdm/issues/481
@@ -39,6 +41,9 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size, keep_in_mem=Fa
 
     if dataset_name == 'dsb2018':
         return DSB2018Sliced(dataset_dir, grayscale, patch_size)
+
+    if dataset_name == 'shapes':
+        return SHAPES(patch_size)
 
     raise ValueError(dataset_name)
 
@@ -93,6 +98,10 @@ def get_model(model_name, patch_size, num_channels):
 
     if model_name == 'linknet34':
         return linknet.LinkNet34(pretrained=True, num_channels=num_channels, num_classes=1)
+
+    if model_name == 'dilated_linknet34':
+        return DilatedLinkNet34(pretrained=True, num_channels=num_channels, num_classes=1)
+
 
     if model_name == 'linknext':
         return LinkNext(num_channels=num_channels, num_classes=1)
