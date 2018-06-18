@@ -87,7 +87,7 @@ class LinkNet34(nn.Module):
         d1 = self.decoder1(d2)
 
         # Final Classification
-        # d1 = self.finaldrop1(d1) # Added dropout
+        d1 = self.finaldrop1(d1) # Added dropout
         f1 = self.finaldeconv1(d1)
         f2 = self.finalrelu1(f1)
         f3 = self.finalconv2(f2)
