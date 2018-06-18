@@ -17,7 +17,7 @@ from lib.datasets.Inria import INRIA
 from lib.datasets.dsb2018 import DSB2018Sliced
 from lib.datasets.shapes import SHAPES
 from lib.losses import JaccardLoss, FocalLossBinary, BCEWithLogitsLossAndSmoothJaccard, BCEWithSigmoidLoss
-from lib.metrics import JaccardScore, PixelAccuracy
+from lib.metrics import JaccardScore, PixelAccuracy, PRCurve
 from lib.models import linknet, unet16, unet11
 from lib.models.dilated_linknet import DilatedLinkNet34
 from lib.models.duc_hdc import ResNetDUCHDC, ResNetDUC
@@ -101,7 +101,6 @@ def get_model(model_name, patch_size, num_channels):
 
     if model_name == 'dilated_linknet34':
         return DilatedLinkNet34(pretrained=True, num_channels=num_channels, num_classes=1)
-
 
     if model_name == 'linknext':
         return LinkNext(num_channels=num_channels, num_classes=1)
@@ -203,11 +202,6 @@ def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_wr
                         param_data = param.data.cpu().numpy()
                         summary_writer.add_histogram('model/' + name, param_data, epoch, bins='doane')
 
-                # for m in model.modules():
-                #     if isinstance(m, nn.Conv2d):
-                #         weights = m.weights.data.numpy()
-
-
             del x, y, outputs, batch_loss
 
     return losses, train_scores
@@ -215,6 +209,8 @@ def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_wr
 
 def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer: SummaryWriter = None):
     losses = AverageMeter()
+    pr_calc = PRCurve()
+    pr_meter = PRCurveMeter()
 
     valid_scores = {}
     for key, _ in metrics.items():
@@ -254,6 +250,9 @@ def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer
                     if summary_writer is not None:
                         summary_writer.add_scalar('val/batch/' + key, score, epoch * n_batches + batch_index)
 
+                tp, tn, fp, fn = pr_calc(y, outputs)
+                pr_meter.update(tp, tn, fp, fn)
+
                 tq.set_postfix(loss='{:.3f}'.format(losses.avg), **valid_scores)
                 tq.update()
 
@@ -265,6 +264,16 @@ def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer
                 for key, value in valid_scores.items():
                     summary_writer.add_scalar('val/epoch/' + key, value.avg, epoch)
 
+                summary_writer.add_pr_curve_raw('val/pr_curve',
+                                                true_positive_counts=pr_meter.tp,
+                                                true_negative_counts=pr_meter.tn,
+                                                false_negative_counts=pr_meter.fn,
+                                                false_positive_counts=pr_meter.fp,
+                                                precision=pr_meter.precision,
+                                                recall=pr_meter.recall,
+                                                num_thresholds=len(pr_meter.thresholds),
+                                                global_step=epoch,
+                                                )
             del x, y, outputs, batch_loss
 
     return losses, valid_scores
@@ -328,7 +337,14 @@ def main():
     with open(os.path.join(experiment_dir, 'arguments.txt'), 'w') as f:
         f.write(' '.join(sys.argv[1:]))
 
-    model = get_model(args.model, patch_size=args.patch_size, num_channels=1 if args.grayscale else 3).cuda()
+    model = get_model(args.model, patch_size=args.patch_size, num_channels=1 if args.grayscale else 3)
+
+    # Write model graph
+    z = torch.Tensor((1, 1 if args.grayscale else 3, args.patch_size, args.patch_size))
+    z.requires_grad = True
+    writer.add_graph(model, z, verbose=True)
+
+    model = model.cuda()
     loss = get_loss(args.loss).cuda()
     optimizer = get_optimizer(args.optimizer, model.parameters(), args.learning_rate)
     metrics = {'iou': JaccardScore().cuda(), 'accuracy': PixelAccuracy().cuda()}
@@ -345,12 +361,6 @@ def main():
     start_epoch = 0
     best_loss = np.inf
     train_history = pd.DataFrame()
-
-    # Write model graph
-    z = torch.Tensor((1, 1 if args.grayscale else 3, args.patch_size, args.patch_size))
-    z.requires_grad=True
-    writer.add_graph(model, z, verbose=True)
-
 
     checkpoint_filename = os.path.join(experiment_dir, f'{args.model}_checkpoint.pth')
     if args.resume:

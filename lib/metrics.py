@@ -62,7 +62,7 @@ class PRCurve(object):
         fn = np.zeros_like(self.thresholds, dtype=np.uint64)
 
         for i, value in enumerate(self.thresholds):
-            y_pred_i = torch.gt(y_pred, value)
+            y_pred_i = torch.gt(y_pred, float(value))
 
             tp[i] = torch.eq(y_true, y_pred_i).sum().cpu().item()
             tn[i] = torch.eq(y_true == 0, y_pred_i == 0).sum().cpu().item()
