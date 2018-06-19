@@ -41,32 +41,3 @@ class PixelAccuracy(_Loss):
 
     def __str__(self):
         return 'PixelAccuracy'
-
-
-class PRCurve(object):
-
-    def __init__(self, thresholds=127):
-        self.thresholds = np.arange(0., 1., 1. / thresholds, dtype=np.float32)
-
-    def reset(self, thresholds):
-        self.thresholds = thresholds
-
-    def __call__(self, y_true: Tensor, y_pred: Tensor):
-
-        y_pred = torch.sigmoid(y_pred)
-        y_true = y_true.byte()
-
-        tp = np.zeros_like(self.thresholds, dtype=np.uint64)
-        tn = np.zeros_like(self.thresholds, dtype=np.uint64)
-        fp = np.zeros_like(self.thresholds, dtype=np.uint64)
-        fn = np.zeros_like(self.thresholds, dtype=np.uint64)
-
-        for i, value in enumerate(self.thresholds):
-            y_pred_i = torch.gt(y_pred, float(value))
-
-            tp[i] = torch.eq(y_true, y_pred_i).sum().cpu().item()
-            tn[i] = torch.eq(y_true == 0, y_pred_i == 0).sum().cpu().item()
-            fp[i] = torch.eq(y_true == 0, y_pred_i == 1).sum().cpu().item()
-            fn[i] = torch.eq(y_true == 1, y_pred_i == 0).sum().cpu().item()
-
-        return tp, tn, fp, fn

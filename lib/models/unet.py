@@ -1,9 +1,3 @@
-from torch import nn
-import torch
-from torchvision import models
-import torchvision
-from torch.nn import functional as F
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -52,13 +46,11 @@ class down(nn.Module):
 
 
 class up(nn.Module):
-    def __init__(self, in_ch, out_ch, bilinear=True):
+    def __init__(self, in_ch, out_ch, upsample=True):
         super(up, self).__init__()
 
-        #  would be a nice idea if the upsampling could be learned too,
-        #  but my machine do not have enough memory to handle all those weights
-        if bilinear:
-            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        if upsample:
+            self.up = nn.Upsample(scale_factor=2, mode='nearest')
         else:
             self.up = nn.ConvTranspose2d(in_ch // 2, in_ch // 2, 2, stride=2)
 
@@ -86,17 +78,17 @@ class outconv(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, n_channels=3, n_classes=1, n_filters=32):
+    def __init__(self, n_channels=3, n_classes=1, n_filters=32, upsample=True):
         super(UNet, self).__init__()
         self.inc = inconv(n_channels, n_filters)
         self.down1 = down(n_filters, n_filters*2)
         self.down2 = down(n_filters*2, n_filters*4)
         self.down3 = down(n_filters*4, n_filters*8)
         self.down4 = down(n_filters*8, n_filters*8)
-        self.up1 = up(n_filters*16, n_filters*4)
-        self.up2 = up(n_filters*8, n_filters*2)
-        self.up3 = up(n_filters*4, n_filters)
-        self.up4 = up(n_filters*2, n_filters)
+        self.up1 = up(n_filters*16, n_filters*4, upsample=upsample)
+        self.up2 = up(n_filters*8, n_filters*2, upsample=upsample)
+        self.up3 = up(n_filters*4, n_filters, upsample=upsample)
+        self.up4 = up(n_filters*2, n_filters, upsample=upsample)
         self.finaldrop = nn.Dropout2d(p=0.5)
         self.outc = outconv(n_filters, n_classes)
 

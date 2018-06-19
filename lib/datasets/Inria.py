@@ -6,11 +6,13 @@ from lib import augmentations as aug
 from lib.common import find_in_dir, TiledImagesDataset
 
 
-
-
-def INRIA(dataset_dir, grayscale, patch_size, keep_in_mem):
+def INRIA(dataset_dir, grayscale, patch_size, keep_in_mem, small=False):
     x = sorted(find_in_dir(os.path.join(dataset_dir, 'images')))
     y = sorted(find_in_dir(os.path.join(dataset_dir, 'gt')))
+
+    if small:
+        x = x[:4]
+        y = y[:4]
 
     x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=1234, test_size=0.1)
 

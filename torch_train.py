@@ -17,7 +17,7 @@ from lib.datasets.Inria import INRIA
 from lib.datasets.dsb2018 import DSB2018Sliced
 from lib.datasets.shapes import SHAPES
 from lib.losses import JaccardLoss, FocalLossBinary, BCEWithLogitsLossAndSmoothJaccard, BCEWithSigmoidLoss
-from lib.metrics import JaccardScore, PixelAccuracy, PRCurve
+from lib.metrics import JaccardScore, PixelAccuracy
 from lib.models import linknet, unet16, unet11
 from lib.models.dilated_linknet import DilatedLinkNet34
 from lib.models.duc_hdc import ResNetDUCHDC, ResNetDUC
@@ -38,6 +38,9 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size, keep_in_mem=Fa
 
     if dataset_name == 'inria':
         return INRIA(dataset_dir, grayscale, patch_size, keep_in_mem)
+
+    if dataset_name == 'inria-small':
+        return INRIA(dataset_dir, grayscale, patch_size, keep_in_mem, small=True)
 
     if dataset_name == 'dsb2018':
         return DSB2018Sliced(dataset_dir, grayscale, patch_size)
@@ -209,7 +212,6 @@ def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_wr
 
 def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer: SummaryWriter = None):
     losses = AverageMeter()
-    pr_calc = PRCurve()
     pr_meter = PRCurveMeter()
 
     valid_scores = {}
@@ -250,8 +252,7 @@ def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer
                     if summary_writer is not None:
                         summary_writer.add_scalar('val/batch/' + key, score, epoch * n_batches + batch_index)
 
-                tp, tn, fp, fn = pr_calc(y, outputs)
-                pr_meter.update(tp, tn, fp, fn)
+                pr_meter.update(outputs, y)
 
                 tq.set_postfix(loss='{:.3f}'.format(losses.avg), **valid_scores)
                 tq.update()
@@ -269,11 +270,9 @@ def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer
                                                 true_negative_counts=pr_meter.tn,
                                                 false_negative_counts=pr_meter.fn,
                                                 false_positive_counts=pr_meter.fp,
-                                                precision=pr_meter.precision,
-                                                recall=pr_meter.recall,
-                                                num_thresholds=len(pr_meter.thresholds),
-                                                global_step=epoch,
-                                                )
+                                                precision=pr_meter.precision(),
+                                                recall=pr_meter.recall(),
+                                                global_step=epoch)
             del x, y, outputs, batch_loss
 
     return losses, valid_scores
@@ -340,9 +339,8 @@ def main():
     model = get_model(args.model, patch_size=args.patch_size, num_channels=1 if args.grayscale else 3)
 
     # Write model graph
-    z = torch.Tensor((1, 1 if args.grayscale else 3, args.patch_size, args.patch_size))
-    z.requires_grad = True
-    writer.add_graph(model, z, verbose=True)
+    dummy_input = torch.autograd.Variable(torch.rand((args.batch_size, 1 if args.grayscale else 3, args.patch_size, args.patch_size)))
+    writer.add_graph(model, dummy_input)
 
     model = model.cuda()
     loss = get_loss(args.loss).cuda()
@@ -362,7 +360,12 @@ def main():
     best_loss = np.inf
     train_history = pd.DataFrame()
 
+    # Checkpoint is train result of epoch with best loss
     checkpoint_filename = os.path.join(experiment_dir, f'{args.model}_checkpoint.pth')
+
+    # Snapshot is train result of last epoch
+    snapshot_filename = os.path.join(experiment_dir, f'{args.model}_snapshot.pth')
+
     if args.resume:
         start_epoch, train_history, best_loss = restore_snapshot(model, optimizer, checkpoint_filename)
         print('Resuming training from epoch', start_epoch, ' and loss', best_loss)
@@ -392,6 +395,8 @@ def main():
             save_snapshot(model, optimizer, valid_loss.avg, epoch, train_history, checkpoint_filename)
             best_loss = valid_loss.avg
             print('Checkpoint saved', epoch, best_loss)
+
+        save_snapshot(model, optimizer, valid_loss.avg, epoch, train_history, snapshot_filename)
 
     print('Training is finished...')
 

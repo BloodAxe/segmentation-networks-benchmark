@@ -91,31 +91,41 @@ def auto_file(filename, where='.') -> str:
 
 class PRCurveMeter(object):
 
-    def __init__(self, thresholds=127):
-
-        self.thresholds = np.arange(0., 1., 1. / thresholds, dtype=np.float32)
-        n_thresholds = len(self.thresholds)
-
+    def __init__(self, n_thresholds=127):
+        self.n_thresholds = n_thresholds
+        self.k = 2
+        self.thresholds = np.arange(0., 1., 1. / n_thresholds, dtype=np.float32)
         self.tp = np.zeros(n_thresholds, dtype=np.uint64)
         self.tn = np.zeros(n_thresholds, dtype=np.uint64)
         self.fp = np.zeros(n_thresholds, dtype=np.uint64)
         self.fn = np.zeros(n_thresholds, dtype=np.uint64)
-        self.precision = np.zeros(n_thresholds, dtype=np.float32)
-        self.recall = np.zeros(n_thresholds, dtype=np.float32)
 
     def reset(self):
         self.tp.fill(0)
         self.tn.fill(0)
         self.fp.fill(0)
         self.fn.fill(0)
-        self.precision.fill(0)
-        self.recall.fill(0)
 
-    def update(self, tp, tn, fp, fn):
-        self.tp += tp
-        self.tn += tn
-        self.fp += fp
-        self.fn += fn
+    def update(self, y_pred, y_true):
+        y_pred = torch.sigmoid(y_pred.detach()).cpu().numpy().reshape(-1)
+        y_true = y_true.cpu().numpy().astype(np.int32).reshape(-1)
 
-        self.precision = self.tp.astype(np.float32) / (self.tp + self.fp)
-        self.recall = self.tp.astype(np.float32) / (self.tp + self.fn)
+        for i, value in enumerate(self.thresholds):
+            y_pred_i = (y_pred > value).astype(np.int32)
+
+            # hack for bincounting 2 arrays together
+            x = y_pred_i + self.k * y_true
+            bincount_2d = np.bincount(x, minlength=self.k ** 2)
+            assert bincount_2d.size == self.k ** 2
+            conf = bincount_2d.reshape((self.k, self.k))
+
+            self.tp[i] += conf[1, 1]
+            self.tn[i] += conf[0, 0]
+            self.fp[i] += conf[0, 1]
+            self.fn[i] += conf[1, 0]
+
+    def precision(self):
+        return np.divide(self.tp, self.tp + self.fp)
+
+    def recall(self):
+        return np.divide(self.tp, self.tp + self.fn)
