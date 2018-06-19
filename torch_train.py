@@ -331,7 +331,7 @@ def main():
     experiment_dir = os.path.join('experiments', args.dataset, args.loss, args.experiment)
     os.makedirs(experiment_dir, exist_ok=True)
 
-    writer = SummaryWriter(comment=args.experiment)
+    writer = SummaryWriter(comment='_'+args.experiment)
 
     with open(os.path.join(experiment_dir, 'arguments.txt'), 'w') as f:
         f.write(' '.join(sys.argv[1:]))
