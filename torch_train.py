@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from tensorboardX import SummaryWriter
 from torch.backends import cudnn
+from torch.nn.modules.loss import _Loss
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
@@ -133,12 +134,29 @@ def get_model(model_name, patch_size, num_channels):
     raise ValueError(model_name)
 
 
-def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_writer=None):
+class L1Regularization(_Loss):
+    def __init__(self, factor=0.0005):
+        super(L1Regularization, self).__init__()
+        self.factor = factor
+        self.l1_crit = nn.L1Loss(size_average=False)
+
+    def forward(self, model):
+        reg_loss = 0
+        for module in model.modules():
+            if isinstance(module, nn.Conv2d):
+                if module.weight.requires_grad:
+                    reg_loss += self.l1_crit(module.weight, target=torch.zeros_like(module.weight))
+        return self.factor * reg_loss
+
+
+def train(model: nn.Module, loss, optimizer, dataloader, epoch: int, metrics={}, summary_writer=None):
     losses = AverageMeter()
 
     train_scores = {}
     for key, _ in metrics.items():
         train_scores[key] = AverageMeter()
+
+    l1_reg = L1Regularization().cuda()
 
     with torch.set_grad_enabled(True):
         model.train()
@@ -160,9 +178,10 @@ def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_wr
                 outputs = model(x)
 
                 batch_loss = loss(outputs, y)
+                reg_loss = l1_reg(model)
 
                 batch_size = x.size(0)
-                (batch_size * batch_loss).backward()
+                (batch_size * (batch_loss + reg_loss)).backward()
 
                 optimizer.step()
 
@@ -170,8 +189,10 @@ def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_wr
                 # Log train progress
 
                 batch_loss_val = batch_loss.cpu().item()
+                reg_loss_val = reg_loss.cpu().item()
                 if summary_writer is not None:
                     summary_writer.add_scalar('train/batch/loss', batch_loss_val, epoch * n_batches + batch_index)
+                    summary_writer.add_scalar('train/batch/l1_reg', reg_loss_val, epoch * n_batches + batch_index)
 
                     # Plot gradient absmax and absmin to see if there are any gradient explosions
                     grad_max = 0
@@ -190,7 +211,7 @@ def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_wr
                     if summary_writer is not None:
                         summary_writer.add_scalar('train/batch/' + key, score, epoch * n_batches + batch_index)
 
-                tq.set_postfix(loss='{:.3f}'.format(losses.avg), **train_scores)
+                tq.set_postfix(loss='{:.3f}'.format(losses.avg), l1_reg='{:.3f}'.format(reg_loss_val), **train_scores)
                 tq.update()
 
             # End of train epoch
@@ -282,7 +303,8 @@ def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer
     return losses, valid_scores
 
 
-def save_snapshot(model: nn.Module, optimizer: Optimizer, loss: float, epoch: int, train_history: pd.DataFrame, snapshot_file: str):
+def save_snapshot(model: nn.Module, optimizer: Optimizer, loss: float, epoch: int, train_history: pd.DataFrame,
+                  snapshot_file: str):
     torch.save({
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
@@ -319,7 +341,8 @@ def main():
     parser.add_argument('-o', '--optimizer', default='SGD', help='Name of the optimizer')
     parser.add_argument('-e', '--epochs', type=int, default=100, help='Epoch to run')
     parser.add_argument('-d', '--dataset', type=str, help='Name of the dataset to use for training.')
-    parser.add_argument('-dd', '--data-dir', type=str, default='data', help='Root directory where datasets are located.')
+    parser.add_argument('-dd', '--data-dir', type=str, default='data',
+                        help='Root directory where datasets are located.')
     parser.add_argument('-s', '--steps', type=int, default=128, help='Steps per epoch')
     parser.add_argument('-x', '--experiment', type=str, help='Name of the experiment')
     parser.add_argument('-w', '--workers', default=0, type=int, help='Num workers')
@@ -330,7 +353,8 @@ def main():
     cudnn.benchmark = True
 
     if args.experiment is None:
-        args.experiment = '%s_%s_%d_%s_%s' % (args.dataset, args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
+        args.experiment = '%s_%s_%d_%s_%s' % (
+            args.dataset, args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
 
     experiment_dir = os.path.join('experiments', args.dataset, args.loss, args.experiment)
     os.makedirs(experiment_dir, exist_ok=True)
@@ -343,7 +367,8 @@ def main():
     model = get_model(args.model, patch_size=args.patch_size, num_channels=1 if args.grayscale else 3)
 
     # Write model graph
-    dummy_input = torch.autograd.Variable(torch.rand((args.batch_size, 1 if args.grayscale else 3, args.patch_size, args.patch_size)))
+    dummy_input = torch.autograd.Variable(
+        torch.rand((args.batch_size, 1 if args.grayscale else 3, args.patch_size, args.patch_size)))
     writer.add_graph(model, dummy_input)
 
     model = model.cuda()
@@ -351,14 +376,17 @@ def main():
     optimizer = get_optimizer(args.optimizer, model.parameters(), args.learning_rate)
     metrics = {'iou': JaccardScore().cuda(), 'accuracy': PixelAccuracy().cuda()}
 
-    trainset, validset, num_classes = get_dataset(args.dataset, args.data_dir, grayscale=args.grayscale, patch_size=args.patch_size, keep_in_mem=args.memory)
+    trainset, validset, num_classes = get_dataset(args.dataset, args.data_dir, grayscale=args.grayscale,
+                                                  patch_size=args.patch_size, keep_in_mem=args.memory)
     print('Train set size', len(trainset))
     print('Valid set size', len(validset))
     print('Model         ', model)
     print('Parameters    ', count_parameters(model))
 
-    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True, drop_last=True)
-    validloader = DataLoader(validset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True, drop_last=True)
+    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
+                             pin_memory=True, drop_last=True)
+    validloader = DataLoader(validset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
+                             pin_memory=True, drop_last=True)
 
     start_epoch = 0
     best_loss = np.inf
