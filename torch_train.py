@@ -26,6 +26,7 @@ from lib.models.linknext import LinkNext
 from lib.models.psp_net import PSPNet
 from lib.models.tiramisu import FCDenseNet67
 from lib.models.unet import UNet
+from lib.models.unet_abn import UNetABN
 from lib.models.zf_unet import ZF_UNET
 from lib.train_utils import AverageMeter, PRCurveMeter
 from lib.common import count_parameters
@@ -89,6 +90,9 @@ def get_model(model_name, patch_size, num_channels):
 
     if model_name == 'unet':
         return UNet()
+
+    if model_name == 'unet_abn':
+        return UNetABN()
 
     if model_name == 'unet11':
         return unet11.UNet11(pretrained=True)
@@ -252,8 +256,6 @@ def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer
                     if summary_writer is not None:
                         summary_writer.add_scalar('val/batch/' + key, score, epoch * n_batches + batch_index)
 
-                pr_meter.update(outputs, y)
-
                 tq.set_postfix(loss='{:.3f}'.format(losses.avg), **valid_scores)
                 tq.update()
 
@@ -265,6 +267,8 @@ def validate(model, loss, dataloader, epoch: int, metrics=dict(), summary_writer
                 for key, value in valid_scores.items():
                     summary_writer.add_scalar('val/epoch/' + key, value.avg, epoch)
 
+                # Compute PR curve only for last batch, because computing it for entire validation set is costly
+                pr_meter.update(outputs, y)
                 summary_writer.add_pr_curve_raw('val/pr_curve',
                                                 true_positive_counts=pr_meter.tp,
                                                 true_negative_counts=pr_meter.tn,
@@ -326,12 +330,12 @@ def main():
     cudnn.benchmark = True
 
     if args.experiment is None:
-        args.experiment = 'torch_%s_%s_%d_%s_%s' % (args.dataset, args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
+        args.experiment = '%s_%s_%d_%s_%s' % (args.dataset, args.model, args.patch_size, 'gray' if args.grayscale else 'rgb', args.loss)
 
     experiment_dir = os.path.join('experiments', args.dataset, args.loss, args.experiment)
     os.makedirs(experiment_dir, exist_ok=True)
 
-    writer = SummaryWriter(comment='_'+args.experiment)
+    writer = SummaryWriter(comment='_' + args.experiment)
 
     with open(os.path.join(experiment_dir, 'arguments.txt'), 'w') as f:
         f.write(' '.join(sys.argv[1:]))
