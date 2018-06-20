@@ -32,7 +32,7 @@ def INRIA(dataset_dir, grayscale, patch_size, keep_in_mem, small=False):
         aug.MaskOnly(aug.MakeBinary())
     ])
 
-    train = TiledImagesDataset(x_train, y_train, patch_size, transform=train_transform, keep_in_mem=keep_in_mem)
-    test = TiledImagesDataset(x_test, y_test, patch_size, transform=test_transform, keep_in_mem=keep_in_mem)
+    train = TiledImagesDataset(x_train, y_train, patch_size, target_shape=(5000,5000), transform=train_transform, keep_in_mem=keep_in_mem)
+    test = TiledImagesDataset(x_test, y_test, patch_size, target_shape=(5000,5000), transform=test_transform, keep_in_mem=keep_in_mem)
     num_classes = 1
     return train, test, num_classes

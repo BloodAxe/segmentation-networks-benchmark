@@ -18,8 +18,9 @@ def maybe_cuda(x):
 
 def count_parameters(model):
     total = sum(p.numel() for p in model.parameters())
-    trainable =  sum(p.numel() for p in model.parameters() if p.requires_grad)
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total, trainable
+
 
 def show_landmarks_batch(data):
     x, y = data
@@ -79,7 +80,8 @@ class InMemoryDataset(Dataset):
 
 
 class ImageMaskDataset(Dataset):
-    def __init__(self, image_filenames, target_filenames, image_loader, target_loader, transform=None, load_in_ram=False):
+    def __init__(self, image_filenames, target_filenames, image_loader, target_loader, transform=None,
+                 load_in_ram=False):
         if len(image_filenames) != len(target_filenames):
             raise ValueError('Number of images does not corresponds to number of targets')
 
@@ -112,22 +114,31 @@ class ImageMaskDataset(Dataset):
 
 
 class TiledImageDataset(Dataset):
-    def __init__(self, image_fname, mask_fname, tile_size, tile_step=0, image_margin=0, transform=None, keep_in_mem=False):
+    def __init__(self, image_fname, mask_fname, tile_size, tile_step=0, image_margin=0, transform=None,
+                 target_shape=None,
+                 keep_in_mem=False):
         self.image_fname = image_fname
         self.mask_fname = mask_fname
 
-        image = read_rgb(image_fname)
-        mask = read_mask(mask_fname)
-        self.image = image if keep_in_mem else None
-        self.mask = mask if keep_in_mem else None
+        self.image = None
+        self.mask = None
 
-        if image.shape[0] != mask.shape[0] or image.shape[1] != mask.shape[1]:
-            raise ValueError()
+        if target_shape is None or keep_in_mem:
+            image = read_rgb(image_fname)
+            mask = read_mask(mask_fname)
+            if image.shape[0] != mask.shape[0] or image.shape[1] != mask.shape[1]:
+                raise ValueError()
+
+            target_shape = image.shape
+
+            if keep_in_mem:
+                self.image = image
+                self.mask = mask
 
         if tile_step <= 0:
-            tile_step = tile_size//2
+            tile_step = tile_size // 2
 
-        self.slicer = ImageSlicer(image.shape, tile_size, tile_step, image_margin)
+        self.slicer = ImageSlicer(target_shape, tile_size, tile_step, image_margin)
         self.transform = transform
 
     def __len__(self):
@@ -149,9 +160,14 @@ class TiledImageDataset(Dataset):
 
 
 class TiledImagesDataset(ConcatDataset):
-    def __init__(self, image_filenames, target_filenames, tile_size, tile_step=0, image_margin=0, transform=None,keep_in_mem=False):
+    def __init__(self, image_filenames, target_filenames, tile_size, tile_step=0, image_margin=0,
+                 target_shape=None,
+                 transform=None,
+                 keep_in_mem=False):
         if len(image_filenames) != len(target_filenames):
             raise ValueError('Number of images does not corresponds to number of targets')
 
-        datasets = [TiledImageDataset(image, mask, tile_size, tile_step, image_margin, transform,keep_in_mem=keep_in_mem) for image, mask in zip(image_filenames, target_filenames)]
+        datasets = [
+            TiledImageDataset(image, mask, tile_size, tile_step, image_margin, transform, target_shape=target_shape, keep_in_mem=keep_in_mem) for
+            image, mask in zip(image_filenames, target_filenames)]
         super().__init__(datasets)
