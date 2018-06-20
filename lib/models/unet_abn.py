@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from lib.modules.abn import InPlaceABN
 
 
 class double_conv(nn.Module):
     '''(conv => BN => ReLU) * 2'''
 
     def __init__(self, in_ch, out_ch):
+        from lib.modules.abn import InPlaceABN
+
         super(double_conv, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, 3, padding=1),
