@@ -54,3 +54,4 @@ summarize(results)
 * https://github.com/0bserver07/One-Hundred-Layers-Tiramisu
 * https://github.com/bfortuner/pytorch_tiramisu
 * https://raw.githubusercontent.com/ZijunDeng/pytorch-semantic-segmentation
+* https://github.com/mapillary/inplace_abn

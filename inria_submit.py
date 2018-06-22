@@ -19,7 +19,7 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 import torch_train as TT
 from lib.common import find_in_dir, read_rgb, InMemoryDataset
-from lib.datasets.Inria import INRIA
+from lib.datasets.Inria import INRIA, INRIA_MEAN, INRIA_STD
 from lib.datasets.dsb2018 import DSB2018Sliced
 from lib.losses import JaccardLoss, FocalLossBinary, BCEWithLogitsLossAndSmoothJaccard, BCEWithSigmoidLoss
 from lib.metrics import JaccardScore, PixelAccuracy
@@ -284,7 +284,7 @@ def main():
     print('Using weights from epoch', start_epoch - 1, best_loss)
 
     test_transform = aug.Sequential([
-        aug.ImageOnly(aug.NormalizeImage())
+        aug.ImageOnly(aug.NormalizeImage(mean=INRIA_MEAN, std=INRIA_STD)),
     ])
 
     x = sorted(find_in_dir(os.path.join(args.data_dir, 'images')))

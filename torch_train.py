@@ -133,6 +133,14 @@ def get_model(model_name, patch_size, num_channels):
     raise ValueError(model_name)
 
 
+def step_learning_rate(optimizer, epoch, initial_lr):
+    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    lr = initial_lr * (0.1 ** (epoch // 10))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    return lr
+
+
 def train(model, loss, optimizer, dataloader, epoch: int, metrics={}, summary_writer=None):
     losses = AverageMeter()
 
