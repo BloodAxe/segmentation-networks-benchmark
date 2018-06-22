@@ -1,39 +1,32 @@
 from torch import nn
-import torch
 from torchvision import models
-import torchvision
-from torch.nn import functional as F
 
 
 class DecoderBlockLinkNet(nn.Module):
     def __init__(self, in_channels, n_filters):
         super().__init__()
 
-        self.relu = nn.ReLU(inplace=True)
+        from lib.modules.abn import InPlaceABN
 
         # B, C, H, W -> B, C/4, H, W
         self.conv1 = nn.Conv2d(in_channels, in_channels // 4, 1)
-        self.norm1 = nn.BatchNorm2d(in_channels // 4)
+        self.abn1 = InPlaceABN(in_channels // 4)
 
         # B, C/4, H, W -> B, C/4, 2 * H, 2 * W
-        self.deconv2 = nn.ConvTranspose2d(in_channels // 4, in_channels // 4, kernel_size=4,
-                                          stride=2, padding=1, output_padding=0)
-        self.norm2 = nn.BatchNorm2d(in_channels // 4)
+        self.deconv2 = nn.ConvTranspose2d(in_channels // 4, in_channels // 4, kernel_size=4, stride=2, padding=1, output_padding=0)
+        self.abn2 = nn.BatchNorm2d(in_channels // 4)
 
         # B, C/4, H, W -> B, C, H, W
         self.conv3 = nn.Conv2d(in_channels // 4, n_filters, 1)
-        self.norm3 = nn.BatchNorm2d(n_filters)
+        self.abn3 = nn.BatchNorm2d(n_filters)
 
     def forward(self, x):
         x = self.conv1(x)
-        x = self.norm1(x)
-        x = self.relu(x)
+        x = self.abn1(x)
         x = self.deconv2(x)
-        x = self.norm2(x)
-        x = self.relu(x)
+        x = self.abn2(x)
         x = self.conv3(x)
-        x = self.norm3(x)
-        x = self.relu(x)
+        x = self.abn3(x)
         return x
 
 
