@@ -9,11 +9,12 @@ from torch import nn
 from tensorboardX import SummaryWriter
 from torch.backends import cudnn
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 from tqdm import tqdm
 
-from lib.datasets.Inria import INRIA
+from lib.datasets.Inria import INRIA, INRIASliced
 from lib.datasets.dsb2018 import DSB2018Sliced
 from lib.datasets.shapes import SHAPES
 from lib.losses import JaccardLoss, FocalLossBinary, BCEWithLogitsLossAndSmoothJaccard, BCEWithSigmoidLoss
@@ -39,6 +40,11 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size, keep_in_mem=Fa
 
     if dataset_name == 'inria':
         return INRIA(dataset_dir, grayscale, patch_size, keep_in_mem)
+
+    if dataset_name == 'inria-1024':
+        if patch_size != 1024:
+            raise ValueError('Patch size must be 1024')
+        return INRIASliced(dataset_dir, grayscale)
 
     if dataset_name == 'inria-small':
         return INRIA(dataset_dir, grayscale, patch_size, keep_in_mem, small=True)
@@ -333,6 +339,7 @@ def main():
     parser.add_argument('-w', '--workers', default=0, type=int, help='Num workers')
     parser.add_argument('-r', '--resume', action='store_true')
     parser.add_argument('-mem', '--memory', action='store_true')
+    parser.add_argument('-sgdr', action='store_true')
 
     args = parser.parse_args()
     cudnn.benchmark = True
@@ -383,7 +390,20 @@ def main():
         print('Resuming training from epoch', start_epoch, ' and loss', best_loss)
         print(train_history)
 
+    scheduler = None
+    if args.sgdr:
+        scheduler = CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-8)
+
     for epoch in range(start_epoch, args.epochs):
+
+        if scheduler is not None:
+            scheduler.step(epoch)
+            lrs = scheduler.get_lr()
+            if len(lrs) > 1:
+                writer.add_scalars('train/lr', dict(enumerate(lrs)), global_step=epoch)
+            else:
+                writer.add_scalar('train/lr', lrs[0], global_step=epoch)
+
         train_loss, train_scores = train(model, loss, optimizer, trainloader, epoch, metrics, summary_writer=writer)
         valid_loss, valid_scores = validate(model, loss, validloader, epoch, metrics, summary_writer=writer)
 
