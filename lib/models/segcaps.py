@@ -12,7 +12,7 @@ import torch
 import torch.nn
 import torch.nn.functional as F
 from torch import nn, Tensor
-from torch.nn import Module
+from torch.nn import Module, Parameter
 
 # Pytorch convention is    N x Atoms x Capsules x Height x Width, (NACHW)
 # Tensorflow convention is N x Height x Width x Capsules x Atoms, (NHWCA)
@@ -38,17 +38,14 @@ class Length(nn.Module):
 
 
 class Mask(Module):
-    def __init__(self, resize_masks=False):
+    def __init__(self):
         super(Mask, self).__init__()
-        self.resize_masks = resize_masks
 
     def forward(self, inputs):
         if type(inputs) is list:
             assert len(inputs) == 2
             input, mask = inputs
-            _, hei, wid, _, _ = input.get_shape()
-            if self.resize_masks:
-                mask = tf.image.resize_bicubic(mask, (hei.value, wid.value))
+
             mask = K.expand_dims(mask, -1)
             if input.get_shape().ndims == 3:
                 masked = K.batch_flatten(mask * input)
@@ -67,7 +64,7 @@ class Mask(Module):
 
 
 class ConvCapsuleLayer(nn.Module):
-    def __init__(self, kernel_size, num_capsule, num_atoms, strides=1, padding='same', routings=3, kernel_initializer='he_normal'):
+    def __init__(self, kernel_size, in_capsules, in_atoms, num_capsule, num_atoms, strides=1, padding=0, routings=3):
         super(ConvCapsuleLayer, self).__init__()
         self.kernel_size = kernel_size
         self.num_capsule = num_capsule
@@ -75,40 +72,37 @@ class ConvCapsuleLayer(nn.Module):
         self.strides = strides
         self.padding = padding
         self.routings = routings
-        self.kernel_initializer = initializers.get(kernel_initializer)
 
-    def build(self, input_shape):
-        assert len(input_shape) == 5, "The input Tensor should have shape=[None, input_height, input_width," \
-                                      " input_num_capsule, input_num_atoms]"
-        self.input_height = input_shape[1]
-        self.input_width = input_shape[2]
-        self.input_num_capsule = input_shape[3]
-        self.input_num_atoms = input_shape[4]
+        self.input_num_capsule = in_capsules
+        self.input_num_atoms = in_atoms
+        self.weight = Parameter(torch.Tensor(out_channels, in_channels, *kernel_size))
+        self.bias = Parameter(torch.Tensor(out_channels))
+
 
         # Transform matrix
         self.W = self.add_weight(shape=[self.kernel_size, self.kernel_size,
-                                        self.input_num_atoms, self.num_capsule * self.num_atoms],
-                                 initializer=self.kernel_initializer,
-                                 name='W')
+                                        self.input_num_atoms, self.num_capsule * self.num_atoms], name='W')
 
-        self.b = self.add_weight(shape=[1, 1, self.num_capsule, self.num_atoms],
-                                 initializer=initializers.constant(0.1),
-                                 name='b')
+        self.b = self.add_weight(shape=[1, 1, self.num_capsule, self.num_atoms], name='b')
 
-        self.built = True
+    def forward(self, input_tensor: Tensor):
+        assert len(input_tensor.size()) == 5, "The input Tensor should have shape=[None, input_height, input_width," \
+                                      " input_num_capsule, input_num_atoms]"
 
-    def forward(self, input_tensor):
         input_transposed = tf.transpose(input_tensor, [3, 0, 1, 2, 4])
         input_shape = K.shape(input_transposed)
         input_tensor_reshaped = K.reshape(input_transposed, [
             input_shape[0] * input_shape[1], self.input_height, self.input_width, self.input_num_atoms])
         input_tensor_reshaped.set_shape((None, self.input_height, self.input_width, self.input_num_atoms))
 
+        # conv = F.conv2d(input_tensor_reshaped, self.W, (self.strides, self.strides),
+        #                 padding=self.padding)
+
         conv = K.conv2d(input_tensor_reshaped, self.W, (self.strides, self.strides),
                         padding=self.padding, data_format='channels_last')
 
-        votes_shape = K.shape(conv)
-        _, conv_height, conv_width, _ = conv.get_shape()
+        votes_shape = conv.size()
+        _, conv_height, conv_width, _ = votes_shape # Needs to fix
 
         votes = K.reshape(conv, [input_shape[1], input_shape[0], votes_shape[1], votes_shape[2],
                                  self.num_capsule, self.num_atoms])
@@ -132,9 +126,8 @@ class ConvCapsuleLayer(nn.Module):
 
 
 class DeconvCapsuleLayer(nn.Module):
-    def __init__(self, kernel_size, num_capsule, num_atoms, scaling=2, upsamp_type='deconv', padding='same', routings=3,
-                 kernel_initializer='he_normal', **kwargs):
-        super(DeconvCapsuleLayer, self).__init__(**kwargs)
+    def __init__(self, kernel_size, in_capsules, in_atoms, num_capsule, num_atoms, scaling=2, upsamp_type='deconv', padding='same', routings=3):
+        super(DeconvCapsuleLayer, self).__init__()
         self.kernel_size = kernel_size
         self.num_capsule = num_capsule
         self.num_atoms = num_atoms
@@ -142,7 +135,6 @@ class DeconvCapsuleLayer(nn.Module):
         self.upsamp_type = upsamp_type
         self.padding = padding
         self.routings = routings
-        self.kernel_initializer = initializers.get(kernel_initializer)
 
     def build(self, input_shape):
         assert len(input_shape) == 5, "The input Tensor should have shape=[None, input_height, input_width," \
@@ -170,9 +162,7 @@ class DeconvCapsuleLayer(nn.Module):
         else:
             raise NotImplementedError('Upsampling must be one of: "deconv", "resize", or "subpix"')
 
-        self.b = self.add_weight(shape=[1, 1, self.num_capsule, self.num_atoms],
-                                 initializer=initializers.constant(0.1),
-                                 name='b')
+        self.b = self.add_weight(shape=[1, 1, self.num_capsule, self.num_atoms], name='b')
 
         self.built = True
 
@@ -270,8 +260,8 @@ def update_routing(votes, biases, logit_shape, num_dims, input_dim, output_dim,
     return K.cast(activations.read(num_routing - 1), dtype='float32')
 
 
-def _squash(input_tensor):
-    norm = tf.norm(input_tensor, axis=-1, keep_dims=True)
+def _squash(input_tensor: Tensor):
+    norm = torch.norm(input_tensor, 2, dim=ATOMS_DIM, keepdim=True)
     norm_squared = norm * norm
     return (input_tensor / norm) * (norm_squared / (1 + norm_squared))
 
@@ -302,33 +292,34 @@ class CapsNetR3(Module):
         self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=16, kernel_size=5, stride=1, padding=2)
 
         # Layer 1: Primary Capsule: Conv cap with routing 1
-        self.primary_caps = ConvCapsuleLayer(kernel_size=5, num_capsule=2, num_atoms=16, strides=2, routings=1)
+        self.primary_caps = ConvCapsuleLayer(kernel_size=5, padding=2, in_capsules=1, in_atoms=16, num_capsule=2, num_atoms=16, strides=2, routings=1)
 
         # Layer 2: Convolutional Capsule
-        self.conv_cap_2_1 = ConvCapsuleLayer(kernel_size=5, num_capsule=4, num_atoms=16, strides=1, routings=3)
+        self.conv_cap_2_1 = ConvCapsuleLayer(kernel_size=5, padding=2, in_capsules=2, in_atoms=16, num_capsule=4, num_atoms=16, strides=1, routings=3)
 
         # Layer 2: Convolutional Capsule
-        self.conv_cap_2_2 = ConvCapsuleLayer(kernel_size=5, num_capsule=4, num_atoms=32, strides=2, routings=3)
+        self.conv_cap_2_2 = ConvCapsuleLayer(kernel_size=5, padding=2, in_capsules=4, in_atoms=16, num_capsule=4, num_atoms=32, strides=2, routings=3)
 
         # Layer 3: Convolutional Capsule
-        self.conv_cap_3_1 = ConvCapsuleLayer(kernel_size=5, num_capsule=8, num_atoms=32, strides=1, routings=3)
+        self.conv_cap_3_1 = ConvCapsuleLayer(kernel_size=5, padding=2, in_capsules=4, in_atoms=32, num_capsule=8, num_atoms=32, strides=1, routings=3)
 
         # Layer 3: Convolutional Capsule
-        self.conv_cap_3_2 = ConvCapsuleLayer(kernel_size=5, num_capsule=8, num_atoms=64, strides=2, routings=3)
+        self.conv_cap_3_2 = ConvCapsuleLayer(kernel_size=5, padding=2, in_capsules=8, in_atoms=32, num_capsule=8, num_atoms=64, strides=2, routings=3)
 
         # Layer 4: Convolutional Capsule
-        self.conv_cap_4_1 = ConvCapsuleLayer(kernel_size=5, num_capsule=8, num_atoms=32, strides=1, routings=3)
+        self.conv_cap_4_1 = ConvCapsuleLayer(kernel_size=5, padding=2, in_capsules=8, in_atoms=64, num_capsule=8, num_atoms=32, strides=1, routings=3)
 
         # Layer 1 Up: Deconvolutional Capsule
-        self.deconv_cap_1_1 = DeconvCapsuleLayer(kernel_size=4, num_capsule=8, num_atoms=32, upsamp_type='deconv', scaling=2, routings=3)
+        self.deconv_cap_1_1 = DeconvCapsuleLayer(kernel_size=4, in_capsules=8, in_atoms=32, num_capsule=8, num_atoms=32, upsamp_type='deconv', scaling=2, routings=3)
+
         # Layer 2 Up: Deconvolutional Capsule
-        self.deconv_cap_2_2 = ConvCapsuleLayer(kernel_size=5, num_capsule=4, num_atoms=16, strides=1, routings=3)
+        self.deconv_cap_2_2 = ConvCapsuleLayer(kernel_size=5, padding=2, in_capsules=16, in_atoms=32, num_capsule=4, num_atoms=16, strides=1, routings=3)
 
         # Layer 3 Up: Deconvolutional Capsule
-        self.deconv_cap_3_1 = DeconvCapsuleLayer(kernel_size=4, num_capsule=2, num_atoms=16, upsamp_type='deconv', scaling=2, routings=3)
+        self.deconv_cap_3_1 = DeconvCapsuleLayer(kernel_size=4, in_capsules= num_capsule=2, num_atoms=16, upsamp_type='deconv', scaling=2, routings=3)
 
         # Layer 4: Convolutional Capsule: 1x1
-        self.seg_caps = ConvCapsuleLayer(kernel_size=1, num_capsule=1, num_atoms=16, strides=1, routings=3)
+        self.seg_caps = ConvCapsuleLayer(kernel_size=1, padding=0, num_capsule=1, num_atoms=16, strides=1, routings=3)
 
         # Layer 4: This is an auxiliary layer to replace each capsule with its length. Just to match the true label's shape.
         self.out_seg = Length(num_classes=n_classes, seg=True)
@@ -344,7 +335,7 @@ class CapsNetR3(Module):
         conv1 = self.conv1(x)
         conv1 = F.relu(conv1, True)
         # Reshape layer to be 1 capsule x [filters] atoms
-        conv1 = torch.unsqueeze(conv1, dim=2)  # NA1HW
+        conv1 = torch.unsqueeze(conv1, dim=CAPS_DIM)  # NA1HW
 
         # Tensorflow convention is NHW1A
 
@@ -359,19 +350,19 @@ class CapsNetR3(Module):
         deconv_cap_1_1 = self.deconv_cap_1_1(conv_cap_4_1)
 
         # Skip connection. Concatenate on capsule dim
-        up_1 = torch.cat(deconv_cap_1_1, conv_cap_3_1, axis=2)
+        up_1 = torch.cat(deconv_cap_1_1, conv_cap_3_1, axis=CAPS_DIM)
 
         deconv_cap_1_2 = self.deconv_cap_1_2(up_1)
         deconv_cap_2_1 = self.deconv_cap_2_1(deconv_cap_1_2)
 
         # Skip connection
-        up_2 = torch.cat(deconv_cap_2_1, conv_cap_2_1, axis=2)
+        up_2 = torch.cat(deconv_cap_2_1, conv_cap_2_1, axis=CAPS_DIM)
 
         deconv_cap_2_2 = self.deconv_cap_2_2(up_2)
         deconv_cap_3_1 = self.deconv_cap_3_1(deconv_cap_2_2)
 
         # Skip connection
-        up_3 = torch.cat(deconv_cap_3_1, conv1, dim=-2)
+        up_3 = torch.cat(deconv_cap_3_1, conv1, dim=CAPS_DIM)
 
         # Layer 4: Convolutional Capsule: 1x1
         seg_caps = self.seg_caps(up_3)
