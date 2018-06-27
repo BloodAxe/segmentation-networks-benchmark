@@ -14,11 +14,11 @@ class DecoderBlockLinkNet(nn.Module):
 
         # B, C/4, H, W -> B, C/4, 2 * H, 2 * W
         self.deconv2 = nn.ConvTranspose2d(in_channels // 4, in_channels // 4, kernel_size=4, stride=2, padding=1, output_padding=0)
-        self.abn2 = nn.BatchNorm2d(in_channels // 4)
+        self.abn2 = InPlaceABN(in_channels // 4)
 
         # B, C/4, H, W -> B, C, H, W
         self.conv3 = nn.Conv2d(in_channels // 4, n_filters, 1)
-        self.abn3 = nn.BatchNorm2d(n_filters)
+        self.abn3 = InPlaceABN(n_filters)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -56,9 +56,9 @@ class LinkNet34(nn.Module):
         # Final Classifier
         self.finaldrop1 = nn.Dropout2d(p=0.5)
         self.finaldeconv1 = nn.ConvTranspose2d(filters[0], 32, 3, stride=2)
-        self.finalrelu1 = nn.ReLU(inplace=True)
+        self.finalrelu1 = nn.LeakyReLU(inplace=True)
         self.finalconv2 = nn.Conv2d(32, 32, 3)
-        self.finalrelu2 = nn.ReLU(inplace=True)
+        self.finalrelu2 = nn.LeakyReLU(inplace=True)
         self.finalconv3 = nn.Conv2d(32, num_classes, 2, padding=1)
 
     # noinspection PyCallingNonCallable
