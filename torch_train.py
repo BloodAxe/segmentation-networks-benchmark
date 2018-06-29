@@ -25,6 +25,7 @@ from lib.models.duc_hdc import ResNetDUCHDC, ResNetDUC
 from lib.models.gcn152 import GCN152, GCN34
 from lib.models.linknext import LinkNext
 from lib.models.psp_net import PSPNet
+from lib.models.squeezenet import SqueezeNet
 from lib.models.tiramisu import FCDenseNet67
 from lib.models.unet import UNet
 from lib.models.unet_abn import UNetABN
@@ -44,6 +45,11 @@ def get_dataset(dataset_name, dataset_dir, grayscale, patch_size, keep_in_mem=Fa
     if dataset_name == 'inria-1024':
         if patch_size != 1024:
             raise ValueError('Patch size must be 1024')
+        return INRIASliced(dataset_dir, grayscale)
+
+    if dataset_name == 'inria-512':
+        if patch_size != 512:
+            raise ValueError('Patch size must be 512')
         return INRIASliced(dataset_dir, grayscale)
 
     if dataset_name == 'inria-small':
@@ -135,6 +141,9 @@ def get_model(model_name, patch_size, num_channels):
 
     if model_name == 'duc_dc':
         return ResNetDUCHDC(num_classes=1)
+
+    if model_name == 'squeezenet':
+        return SqueezeNet(num_classes=1, in_channels=3)
 
     raise ValueError(model_name)
 
@@ -369,7 +378,7 @@ def main():
     trainset, validset, num_classes = get_dataset(args.dataset, args.data_dir, grayscale=args.grayscale, patch_size=args.patch_size, keep_in_mem=args.memory)
     print('Train set size', len(trainset))
     print('Valid set size', len(validset))
-    print('Model         ', model)
+    print('Model         ', args.model)
     print('Parameters    ', count_parameters(model))
 
     trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True, drop_last=True)
