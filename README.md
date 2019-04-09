@@ -1,7 +1,11 @@
 # Segmentation networks benchmark
 
-Evaluation framework for testing segmentation networks in Keras and PyTorch.
+Evaluation framework for testing segmentation networks in PyTorch.
 What segmentation network to choose for next Kaggle competition? This benchmark knows the answer!
+
+# Deprecation notice
+
+*This repository is not maintained. Please refer to https://github.com/BloodAxe/pytorch-toolbelt instead.*
 
 ## What all this code is about?
 
